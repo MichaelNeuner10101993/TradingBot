@@ -1,0 +1,22 @@
+[Unit]
+Description=Trading Bot - %i
+After=network.target
+PartOf=tradingbot.target
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+[Service]
+Type=simple
+User=DEIN_USER
+WorkingDirectory=DEIN_BOTDIR
+EnvironmentFile=DEIN_BOTDIR/.env
+EnvironmentFile=DEIN_BOTDIR/bot.conf.d/%i.conf
+ExecStart=/bin/sh -c 'DEIN_BOTDIR/botvenv/bin/python DEIN_BOTDIR/main.py --symbol "$BOT_SYMBOL" $BOT_ARGS'
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=tradingbot.target

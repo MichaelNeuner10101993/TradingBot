@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>Trading Bots</title>
+  <script src="/static/chart.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Courier New', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+      font-size: 13px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #21262d;
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+    }
+    header h1 { font-size: 18px; color: #58a6ff; }
+    header .meta { font-size: 11px; color: #8b949e; text-align: right; }
+
+    /* ── Overview Grid ─────────────────────────────────── */
+    .overview {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+
+    .bot-card {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 10px;
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color .15s;
+      text-decoration: none;
+    }
+    .bot-card:hover { border-color: #58a6ff; }
+    .bot-card.error-card { border-color: #3d1a1a; }
+
+    .bot-card .sym {
+      font-size: 16px;
+      font-weight: bold;
+      color: #e6edf3;
+      margin-bottom: 4px;
+    }
+    .bot-card .sig {
+      font-size: 22px;
+      font-weight: bold;
+      margin: 8px 0 4px;
+    }
+    .sig.buy  { color: #3fb950; }
+    .sig.sell { color: #f85149; }
+    .sig.hold { color: #d29922; }
+    .sig.dash { color: #484f58; }
+
+    .bot-card .price { font-size: 15px; color: #e6edf3; margin-bottom: 8px; }
+
+    .bot-card .row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+
+    /* ── Badges ────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: bold;
+      vertical-align: middle;
+    }
+    .badge.live    { background:#1f4e2e; color:#3fb950; }
+    .badge.dry     { background:#2d2208; color:#d29922; }
+    .badge.running { background:#1c2d3f; color:#58a6ff; }
+    .badge.stopped { background:#21262d; color:#8b949e; }
+    .badge.sl_hit  { background:#3d1a1a; color:#f85149; }
+    .badge.tp_hit  { background:#1f4e2e; color:#3fb950; }
+    .badge.open    { background:#1c2d3f; color:#58a6ff; }
+    .badge.signal_close { background:#21262d; color:#8b949e; }
+    .badge.err     { background:#3d1a1a; color:#f85149; }
+
+    .pnl.pos { color: #3fb950; }
+    .pnl.neg { color: #f85149; }
+
+    /* ── Per-Bot Detail ────────────────────────────────── */
+    .bot-section {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .bot-section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      background: #161b22;
+      border-bottom: 1px solid #21262d;
+      cursor: pointer;
+      user-select: none;
+    }
+    .bot-section-header:hover { background: #1c2128; }
+    .bot-section-header .sym  { font-size: 15px; font-weight: bold; color: #e6edf3; }
+    .bot-section-header .info { font-size: 11px; color: #8b949e; margin-left: auto; }
+
+    .bot-section-body { padding: 16px 18px; }
+
+    .sub-section { margin-bottom: 18px; }
+    .sub-section h3 {
+      font-size: 11px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: 8px;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: #8b949e; font-weight: normal; padding: 5px 8px; border-bottom: 1px solid #21262d; }
+    td { padding: 6px 8px; border-bottom: 1px solid #161b22; }
+    tr:hover td { background: #1c2128; }
+
+    .empty { color: #484f58; font-style: italic; padding: 8px 0; font-size: 12px; }
+
+    .collapsed .bot-section-body { display: none; }
+    .chevron { color: #8b949e; transition: transform .2s; }
+    .collapsed .chevron { transform: rotate(-90deg); }
+
+    footer {
+      margin-top: 28px;
+      font-size: 11px;
+      color: #484f58;
+      text-align: center;
+    }
+
+    /* ── SL/TP Inline-Inputs ────────────────────────────── */
+    .sltp-ctrl {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .sltp-input {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 2px 5px;
+      text-align: right;
+      width: 96px;
+      /* native spinner ausblenden */
+      -moz-appearance: textfield;
+    }
+    .sltp-input::-webkit-inner-spin-button,
+    .sltp-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+    .sltp-input:focus { outline: none; border-color: #58a6ff; }
+
+    .sltp-adj {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #8b949e;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      line-height: 1;
+      padding: 1px 6px 2px;
+      user-select: none;
+    }
+    .sltp-adj:hover { background: #30363d; color: #e6edf3; border-color: #58a6ff; }
+    .sltp-adj:active { background: #388bfd22; }
+
+    .sltp-btn {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #8b949e;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 10px;
+      white-space: nowrap;
+    }
+    .sltp-btn:hover          { border-color: #58a6ff; color: #58a6ff; }
+    .sltp-btn.sltp-ok        { border-color: #3fb950; color: #3fb950; }
+    .sltp-btn.sltp-err       { border-color: #f85149; color: #f85149; }
+
+    /* ── Bot Management ─────────────────────────────────── */
+    .stop-btn {
+      background: transparent;
+      border: 1px solid #3d1a1a;
+      border-radius: 4px;
+      color: #f85149;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 2px 9px;
+      margin-left: auto;
+    }
+    .stop-btn:hover { background: #3d1a1a; }
+
+    .start-btn {
+      background: transparent;
+      border: 1px solid #1f4e2e;
+      border-radius: 4px;
+      color: #3fb950;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 2px 9px;
+      margin-left: auto;
+    }
+    .start-btn:hover { background: #1f4e2e; }
+
+    .delete-btn {
+      background: transparent;
+      border: 1px solid #21262d;
+      border-radius: 4px;
+      color: #484f58;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 2px 9px;
+      margin-left: 6px;
+    }
+    .delete-btn:hover { border-color: #f85149; color: #f85149; }
+
+    .add-bot-btn {
+      background: #1c2d3f;
+      border: 1px solid #1f4e2e;
+      border-radius: 8px;
+      color: #3fb950;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 14px 20px;
+      text-align: center;
+      width: 100%;
+      transition: background .15s;
+    }
+    .add-bot-btn:hover { background: #1f3a28; }
+
+    dialog {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      color: #c9d1d9;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      max-width: 420px;
+      padding: 24px;
+      width: 90vw;
+    }
+    dialog::backdrop { background: rgba(0,0,0,.6); }
+    dialog h3 { color: #58a6ff; margin-bottom: 18px; font-size: 15px; }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .form-row.full { grid-template-columns: 1fr; }
+    .form-row label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #8b949e; }
+    .form-row input, .form-row select {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #e6edf3;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 5px 7px;
+    }
+    .form-row input:focus, .form-row select:focus { outline: none; border-color: #58a6ff; }
+    .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+    .btn-primary {
+      background: #1f4e2e; border: 1px solid #3fb950; border-radius: 4px;
+      color: #3fb950; cursor: pointer; font-family: inherit; font-size: 12px; padding: 5px 16px;
+    }
+    .btn-primary:hover { background: #2d6b3e; }
+    .btn-secondary {
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+      color: #8b949e; cursor: pointer; font-family: inherit; font-size: 12px; padding: 5px 16px;
+    }
+    .btn-secondary:hover { background: #30363d; }
+
+    /* ── Market-Suche Dropdown ──────────────────────────── */
+    .market-wrap { position: relative; }
+    .market-dd {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 300;
+      max-height: 210px; overflow-y: auto;
+      background: #0d1117; border: 1px solid #30363d;
+      border-top: none; border-radius: 0 0 6px 6px;
+    }
+    .market-opt {
+      display: grid; grid-template-columns: 90px 1fr auto;
+      align-items: center; gap: 8px;
+      padding: 6px 10px; cursor: pointer; font-size: 12px;
+    }
+    .market-opt:hover { background: #21262d; }
+    .market-opt .m-sym   { color: #e6edf3; font-weight: bold; }
+    .market-opt .m-base  { color: #8b949e; }
+    .market-opt .m-price { color: #58a6ff; text-align: right; font-size: 11px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>⬡ Trading Bots &nbsp;<span style="color:#484f58;font-size:12px">{{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</span></h1>
+    <div style="margin-top:6px;font-size:12px;color:#8b949e">
+      Portfolio:
+      <span style="color:#e6edf3;font-weight:bold">{{ "%.2f"|format(portfolio_total) }} EUR</span>
+      <span style="color:#484f58">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
+    </div>
+  </div>
+  <div class="meta">
+    Auto-Refresh in <span id="cd">60</span>s
+  </div>
+</header>
+
+{% if not bots %}
+  <div class="empty" style="padding:40px;text-align:center">
+    Keine Bot-DBs in <code>db/</code> gefunden.<br>
+    Starte einen Bot mit <code>python main.py --symbol SNX/EUR</code>
+  </div>
+{% endif %}
+
+<!-- ── Overview Cards ───────────────────────────────────── -->
+<div class="overview">
+{% for bot in bots %}
+  <a class="bot-card {% if bot.get('error') %}error-card{% endif %}"
+     href="#bot-{{ loop.index }}"
+     data-symbol="{{ bot.symbol }}">
+    <div class="sym">
+      {{ bot.symbol }}
+      <span class="badge {{ 'dry' if bot.dry_run else 'live' }}">{{ 'DRY' if bot.dry_run else 'LIVE' }}</span>
+      {% set st = bot.status %}
+      <span class="badge {% if 'running' in st %}running{% elif 'error' in st %}err{% else %}stopped{% endif %}" data-role="status">
+        {% if 'running' in st %}● ON{% elif 'error' in st %}⚠ ERR{% else %}■ OFF{% endif %}
+      </span>
+    </div>
+
+    {% if bot.get('error') %}
+      <div style="color:#f85149;font-size:12px;margin-top:8px">{{ bot.error }}</div>
+    {% else %}
+      <div class="sig {{ bot.signal.lower() if bot.signal in ('BUY','SELL','HOLD') else 'dash' }}" data-role="signal">
+        {{ bot.signal }}
+      </div>
+      <div class="price" data-role="price">{{ bot.last_price_fmt }} {{ bot.quote }}</div>
+
+      <div class="row">
+        <span>{{ bot.quote }}-Balance</span>
+        <span data-role="balance-quote">{{ bot.state.get('balance_quote','–') }} {{ bot.quote }}</span>
+      </div>
+      <div class="row">
+        <span>{{ bot.base }}-Balance</span>
+        <span data-role="balance-base">{{ bot.state.get('balance_base','–') }}</span>
+      </div>
+      <div class="row">
+        <span>{{ bot.base }}-Wert</span>
+        <span data-role="coin-value" style="color:#e6edf3">{{ "%.2f"|format(bot.coin_value_eur) }} EUR</span>
+      </div>
+      <div class="row">
+        <span>Offene Trades</span>
+        <span data-role="open-trades" style="color:{% if bot.open_trades %}#58a6ff{% else %}#484f58{% endif %}">
+          {{ bot.open_trades|length }}
+        </span>
+      </div>
+      {% if bot.open_trades %}
+      <div style="border-top:1px solid #21262d;margin-top:8px;padding-top:8px">
+        <div class="row">
+          <span>P&L jetzt</span>
+          <span data-role="pnl-now" class="pnl {{ 'pos' if bot.total_pnl_eur >= 0 else 'neg' }}">
+            {{ "%+.2f"|format(bot.total_pnl_eur) }} EUR
+          </span>
+        </div>
+        <div class="row">
+          <span>P&L bei TP</span>
+          <span style="color:#3fb950">+{{ "%.2f"|format(bot.total_expect_profit_eur) }} EUR</span>
+        </div>
+        <div class="row">
+          <span>P&L bei SL</span>
+          <span style="color:#f85149">-{{ "%.2f"|format(bot.total_expect_loss_eur) }} EUR</span>
+        </div>
+      </div>
+      {% endif %}
+      <div class="row" style="margin-top:6px">
+        <span>Aktualisiert</span>
+        <span data-role="ago">vor {{ bot.ago }}</span>
+      </div>
+    {% endif %}
+  </a>
+{% endfor %}
+  <button class="add-bot-btn" onclick="openNewBotDialog()">
+    + Bot hinzufügen
+  </button>
+</div>
+
+<!-- ── Per-Bot Detail Sections ──────────────────────────── -->
+{% for bot in bots %}
+<div class="bot-section" id="bot-{{ loop.index }}">
+  <div class="bot-section-header" onclick="toggle(this)">
+    <span class="chevron">▼</span>
+    <span class="sym">{{ bot.symbol }}</span>
+    <span class="badge {{ 'dry' if bot.dry_run else 'live' }}">{{ 'DRY RUN' if bot.dry_run else 'LIVE' }}</span>
+    {% if bot.state.get('timeframe') %}
+      <span class="badge stopped">{{ bot.state.timeframe }}</span>
+    {% endif %}
+    {% if bot.state.get('sl_pct') %}
+      <span style="font-size:11px;color:#8b949e">
+        SL {{ (bot.state.sl_pct|float * 100)|round(1) }}% &nbsp;
+        TP {{ (bot.state.tp_pct|float * 100)|round(1) }}%
+      </span>
+    {% endif %}
+    <span class="info">vor {{ bot.ago }}</span>
+    {% if bot.process_running or bot.status == 'running' %}
+    <button class="stop-btn" onclick="stopBot(event, '{{ bot.symbol }}', this)">■ Stoppen</button>
+    {% else %}
+    <button class="start-btn"
+            data-cfg='{{ {
+                "symbol":    bot.symbol,
+                "timeframe": bot.state.get("timeframe", "5m"),
+                "fast":      bot.state.get("fast_period", 9)|int,
+                "slow":      bot.state.get("slow_period", 21)|int,
+                "sl":        (bot.state.get("sl_pct", "0.03")|float * 100)|round(1),
+                "tp":        (bot.state.get("tp_pct", "0.06")|float * 100)|round(1),
+                "dry_run":   bot.dry_run,
+            } | tojson }}'
+            onclick="restartBot(event, this)">▶ Starten</button>
+    <button class="delete-btn" onclick="openDeleteDialog(event, '{{ bot.symbol }}')">✕</button>
+    {% endif %}
+  </div>
+
+  {% if not bot.get('error') %}
+  <div class="bot-section-body">
+
+    <!-- Offene Trades -->
+    <div class="sub-section">
+      <h3>Offene Trades</h3>
+      {% if bot.open_trades %}
+      <table>
+        <tr><th>Amount</th><th>Entry</th><th>Stop-Loss</th><th>Exp. Verlust</th><th>Take-Profit</th><th>Exp. Gewinn</th><th>P&L</th><th>Seit</th><th></th></tr>
+        {% for t in bot.open_trades %}
+        <tr>
+          <td>{{ "%.4f"|format(t.amount) }} {{ bot.base }}</td>
+          <td>{{ "%.4f"|format(t.entry_price) }}</td>
+          <td>
+            <div class="sltp-ctrl">
+              <button class="sltp-adj" onclick="adj('sl-{{ t.client_id }}', {{ t.amount }}, -1)">−</button>
+              <input type="number" step="any" min="0"
+                     value="{{ "%.8f"|format(t.sl_price) }}"
+                     id="sl-{{ t.client_id }}" class="sltp-input" style="color:#f85149">
+              <button class="sltp-adj" onclick="adj('sl-{{ t.client_id }}', {{ t.amount }}, +1)">+</button>
+            </div>
+            <span style="font-size:11px;color:#f85149">
+              {% if t.expect_loss_pct is not none %}-{{ "%.2f"|format(t.expect_loss_pct) }}%{% endif %}
+              {% if t.expect_loss_eur is not none %} / -{{ "%.2f"|format(t.expect_loss_eur) }}€{% endif %}
+            </span>
+            {% if t.dist_to_sl_pct is not none %}
+            <span style="font-size:11px;color:{% if t.dist_to_sl_pct < 1.0 %}#f85149{% elif t.dist_to_sl_pct < 2.0 %}#d29922{% else %}#8b949e{% endif %}">
+              noch {{ "%.2f"|format(t.dist_to_sl_pct) }}% Abstand
+            </span>
+            {% endif %}
+          </td>
+          <td style="color:#f85149;font-size:12px">
+            {% if t.expect_loss_eur is not none %}-{{ "%.3f"|format(t.expect_loss_eur) }} {{ bot.quote }}{% else %}–{% endif %}
+          </td>
+          <td>
+            <div class="sltp-ctrl">
+              <button class="sltp-adj" onclick="adj('tp-{{ t.client_id }}', {{ t.amount }}, -1)">−</button>
+              <input type="number" step="any" min="0"
+                     value="{{ "%.8f"|format(t.tp_price) }}"
+                     id="tp-{{ t.client_id }}" class="sltp-input" style="color:#3fb950">
+              <button class="sltp-adj" onclick="adj('tp-{{ t.client_id }}', {{ t.amount }}, +1)">+</button>
+            </div>
+            <span style="font-size:11px;color:#3fb950">
+              {% if t.expect_profit_pct is not none %}+{{ "%.2f"|format(t.expect_profit_pct) }}%{% endif %}
+              {% if t.expect_profit_eur is not none %} / +{{ "%.2f"|format(t.expect_profit_eur) }}€{% endif %}
+            </span>
+            {% if t.dist_to_tp_pct is not none %}
+            <span style="font-size:11px;color:{% if t.dist_to_tp_pct < 0.5 %}#3fb950{% elif t.dist_to_tp_pct < 1.5 %}#58a6ff{% else %}#8b949e{% endif %}">
+              noch {{ "%.2f"|format(t.dist_to_tp_pct) }}% bis TP
+            </span>
+            {% endif %}
+          </td>
+          <td style="color:#3fb950;font-size:12px">
+            {% if t.expect_profit_eur is not none %}+{{ "%.3f"|format(t.expect_profit_eur) }} {{ bot.quote }}{% else %}–{% endif %}
+          </td>
+          <td class="pnl {{ 'pos' if t.pnl_pct and t.pnl_pct >= 0 else 'neg' }}">
+            {% if t.pnl_pct is not none %}{{ "%+.2f"|format(t.pnl_pct) }}%{% else %}–{% endif %}
+          </td>
+          <td style="color:#8b949e">{{ t.opened_at[:16].replace('T',' ') if t.opened_at else '–' }}</td>
+          <td>
+            <button class="sltp-btn"
+                    onclick="saveSlTp('{{ bot.symbol }}', '{{ t.client_id }}', this)">
+              Speichern
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <div class="empty">Kein offener Trade.</div>
+      {% endif %}
+    </div>
+
+    <!-- P&L Chart -->
+    <div class="sub-section">
+      <h3>Gewinn / Verlust Verlauf</h3>
+      {% if bot.pnl_history %}
+      <div style="position:relative;height:180px">
+        <canvas id="chart-{{ loop.index }}"></canvas>
+      </div>
+      <script>
+      (function() {
+        const data = {{ bot.pnl_history | tojson }};
+        const labels = data.map(d => d.date);
+        const values = data.map(d => d.cumulative);
+        const colors = values.map((v, i) =>
+          i === 0 ? '#58a6ff' : values[i] >= values[i-1] ? '#3fb950' : '#f85149'
+        );
+        const lastVal = values[values.length - 1] || 0;
+        const borderColor = lastVal >= 0 ? '#3fb950' : '#f85149';
+        const fillColor   = lastVal >= 0 ? 'rgba(63,185,80,0.08)' : 'rgba(248,81,73,0.08)';
+
+        new Chart(document.getElementById('chart-{{ loop.index }}'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Kumulativer P&L ({{ bot.quote }})',
+              data: values,
+              borderColor,
+              backgroundColor: fillColor,
+              fill: true,
+              tension: 0.3,
+              pointRadius: 4,
+              pointBackgroundColor: colors,
+              pointBorderColor: colors,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: ctx => {
+                    const d = data[ctx.dataIndex];
+                    const sign = d.pnl >= 0 ? '+' : '';
+                    return [
+                      ` Gesamt: ${ctx.parsed.y.toFixed(4)} {{ bot.quote }}`,
+                      ` Trade:  ${sign}${d.pnl.toFixed(4)} {{ bot.quote }} (${d.status})`
+                    ];
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                ticks: { color: '#8b949e', font: { size: 10 }, maxRotation: 30 },
+                grid:  { color: '#21262d' }
+              },
+              y: {
+                ticks: {
+                  color: '#8b949e', font: { size: 10 },
+                  callback: v => (v >= 0 ? '+' : '') + v.toFixed(3) + ' {{ bot.quote }}'
+                },
+                grid: { color: '#21262d' }
+              }
+            }
+          }
+        });
+      })();
+      </script>
+      {% else %}
+      <div class="empty">Noch keine abgeschlossenen Trades für Chart.</div>
+      {% endif %}
+    </div>
+
+    <!-- Trade-Historie (nur geschlossene) -->
+    <div class="sub-section">
+      <h3>Trade-Historie</h3>
+      {% if bot.closed_trades %}
+      <table>
+        <tr><th>Amount</th><th>Entry</th><th>SL</th><th>TP</th><th>Ergebnis</th><th>P&L</th><th>Eröffnet</th><th>Geschlossen</th></tr>
+        {% for t in bot.closed_trades %}
+        {% set pnl = t.pnl_pct %}
+        <tr>
+          <td>{{ "%.4f"|format(t.amount) if t.amount else '–' }}</td>
+          <td>{{ "%.4f"|format(t.entry_price) if t.entry_price else '–' }}</td>
+          <td style="color:#f85149">{{ "%.4f"|format(t.sl_price) if t.sl_price else '–' }}</td>
+          <td style="color:#3fb950">{{ "%.4f"|format(t.tp_price) if t.tp_price else '–' }}</td>
+          <td><span class="badge {{ t.status }}">{{ t.status }}</span></td>
+          <td class="pnl {{ 'pos' if pnl and pnl >= 0 else 'neg' }}">
+            {% if pnl is not none %}{{ "%+.2f"|format(pnl) }}%{% else %}–{% endif %}
+          </td>
+          <td style="color:#8b949e">{{ t.opened_at[:16].replace('T',' ') if t.opened_at else '–' }}</td>
+          <td style="color:#8b949e">{{ t.closed_at[:16].replace('T',' ') if t.closed_at else '–' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <div class="empty">Noch keine abgeschlossenen Trades.</div>
+      {% endif %}
+    </div>
+
+    <!-- Letzte Orders -->
+    <div class="sub-section">
+      <h3>Letzte Orders</h3>
+      {% if bot.recent_orders %}
+      <table>
+        <tr><th>Seite</th><th>Amount</th><th>Preis</th><th>Status</th><th>Zeit</th></tr>
+        {% for o in bot.recent_orders %}
+        <tr>
+          <td class="pnl {{ 'pos' if o.side == 'buy' else 'neg' }}">{{ o.side.upper() if o.side else '–' }}</td>
+          <td>{{ "%.4f"|format(o.amount) if o.amount else '–' }}</td>
+          <td>{{ "%.4f"|format(o.price) if o.price else '–' }}</td>
+          <td><span class="badge {{ 'open' if o.status == 'open' else 'stopped' }}">{{ o.status }}</span></td>
+          <td style="color:#8b949e">{{ o.created_at[:16].replace('T',' ') if o.created_at else '–' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <div class="empty">Noch keine Orders.</div>
+      {% endif %}
+    </div>
+
+    <!-- Fehler -->
+    {% if bot.recent_errors %}
+    <div class="sub-section">
+      <h3>Fehler</h3>
+      <table>
+        <tr><th>Kontext</th><th>Meldung</th><th>Zeit</th></tr>
+        {% for e in bot.recent_errors %}
+        <tr style="{% if e.is_old %}opacity:0.35{% endif %}">
+          <td style="color:{% if e.is_old %}#8b949e{% else %}#f85149{% endif %}">{{ e.context }}</td>
+          <td>{{ e.message[:80] }}</td>
+          <td style="color:#8b949e">{{ e.occurred_at[:16].replace('T',' ') }}{% if e.is_old %} (alt){% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+
+  </div>
+  {% else %}
+  <div class="bot-section-body">
+    <div style="color:#f85149">DB-Fehler: {{ bot.error }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+
+<footer>Trading Bot Dashboard · Cards live alle 5s · Seite neu alle 60s · {{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</footer>
+
+<!-- ── Neuer Bot Dialog ───────────────────────────────────── -->
+<dialog id="new-bot-dialog">
+  <h3>+ Neuer Bot</h3>
+  <div class="form-row full">
+    <label>Symbol
+      <div class="market-wrap">
+        <input id="nb-symbol" placeholder="Klicke + Bot hinzufügen um Märkte zu laden…"
+               autocomplete="off" oninput="filterMarkets(this.value)" onfocus="showMarketDd()">
+        <div id="nb-market-dd" class="market-dd" style="display:none"></div>
+      </div>
+    </label>
+  </div>
+  <div class="form-row">
+    <label>Timeframe
+      <select id="nb-tf">
+        <option value="1m">1m</option>
+        <option value="3m">3m</option>
+        <option value="5m" selected>5m</option>
+        <option value="15m">15m</option>
+        <option value="1h">1h</option>
+      </select>
+    </label>
+    <label>Safety Buffer %
+      <input id="nb-buf" type="number" value="10" min="0" max="50" step="1">
+    </label>
+  </div>
+  <div class="form-row">
+    <label>Fast MA
+      <input id="nb-fast" type="number" value="9" min="2" max="200">
+    </label>
+    <label>Slow MA
+      <input id="nb-slow" type="number" value="21" min="3" max="500">
+    </label>
+  </div>
+  <div class="form-row">
+    <label>Stop-Loss %
+      <input id="nb-sl" type="number" value="3" min="0.1" max="50" step="0.1">
+    </label>
+    <label>Take-Profit %
+      <input id="nb-tp" type="number" value="6" min="0.1" max="100" step="0.1">
+    </label>
+  </div>
+  <div class="form-row full">
+    <label style="flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+      <input id="nb-dry" type="checkbox"> Dry Run (kein echter Handel)
+    </label>
+  </div>
+  <div id="nb-error" style="color:#f85149;font-size:12px;min-height:18px;margin-top:4px"></div>
+  <div class="form-actions">
+    <button class="btn-secondary" onclick="document.getElementById('new-bot-dialog').close()">Abbrechen</button>
+    <button class="btn-primary" id="nb-submit" onclick="startBot()">▶ Starten</button>
+  </div>
+</dialog>
+
+<!-- ── Bot löschen Dialog ─────────────────────────────────── -->
+<dialog id="delete-bot-dialog">
+  <h3 style="color:#f85149">Bot löschen</h3>
+  <p id="delete-bot-name" style="color:#e6edf3;font-size:15px;font-weight:bold;margin-bottom:16px"></p>
+  <div class="form-row full">
+    <label style="flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+      <input id="delete-keep-db" type="checkbox" checked>
+      DB archivieren <span style="color:#484f58">(in db/archive/ – andere Bots teilen Kapital neu auf)</span>
+    </label>
+  </div>
+  <p id="delete-bot-error" style="color:#f85149;font-size:12px;min-height:16px;margin-top:8px"></p>
+  <div class="form-actions">
+    <button class="btn-secondary" onclick="document.getElementById('delete-bot-dialog').close()">Abbrechen</button>
+    <button id="delete-confirm-btn"
+            style="background:#3d1a1a;border:1px solid #f85149;border-radius:4px;color:#f85149;cursor:pointer;font-family:inherit;font-size:12px;padding:5px 16px"
+            onclick="confirmDeleteBot()">✕ Endgültig löschen</button>
+  </div>
+</dialog>
+
+<script>
+  // Countdown (60s full-page reload via <meta refresh>)
+  let s = 60;
+  const el = document.getElementById('cd');
+  setInterval(() => { s--; if (s >= 0 && el) el.textContent = s; }, 1000);
+
+  // Collapse/Expand
+  function toggle(header) {
+    header.closest('.bot-section').classList.toggle('collapsed');
+  }
+
+  // ── Live Card Updates alle 5s ──────────────────────────────────────
+  async function updateCards() {
+    let bots;
+    try {
+      const res = await fetch('/api/bots');
+      if (!res.ok) return;
+      bots = await res.json();
+    } catch (e) {
+      return; // Netzwerkfehler ignorieren
+    }
+
+    bots.forEach(bot => {
+      const card = document.querySelector(`.bot-card[data-symbol="${CSS.escape(bot.symbol)}"]`);
+      if (!card || card.classList.contains('error-card')) return;
+
+      // Signal
+      const sigEl = card.querySelector('[data-role="signal"]');
+      if (sigEl) {
+        const sig = (bot.signal || '–').toUpperCase();
+        const cls = ['BUY','SELL','HOLD'].includes(sig) ? sig.toLowerCase() : 'dash';
+        sigEl.className = `sig ${cls}`;
+        sigEl.textContent = sig;
+      }
+
+      // Preis
+      const priceEl = card.querySelector('[data-role="price"]');
+      if (priceEl) priceEl.textContent = `${bot.last_price_fmt} ${bot.quote}`;
+
+      // Status-Badge
+      const statusEl = card.querySelector('[data-role="status"]');
+      if (statusEl) {
+        const st = bot.status || '';
+        let cls = 'stopped', txt = '■ OFF';
+        if (st.includes('running')) { cls = 'running'; txt = '● ON'; }
+        else if (st.includes('error')) { cls = 'err'; txt = '⚠ ERR'; }
+        statusEl.className = `badge ${cls}`;
+        statusEl.textContent = txt;
+      }
+
+      // EUR-Balance
+      const bqEl = card.querySelector('[data-role="balance-quote"]');
+      if (bqEl && bot.state) {
+        const val = bot.state.balance_quote || '–';
+        bqEl.textContent = val !== '–' ? `${val} ${bot.quote}` : '–';
+      }
+
+      // Coin-Balance
+      const bbEl = card.querySelector('[data-role="balance-base"]');
+      if (bbEl && bot.state) bbEl.textContent = bot.state.balance_base || '–';
+
+      // Coin-Wert in EUR
+      const cvEl = card.querySelector('[data-role="coin-value"]');
+      if (cvEl) {
+        const coinVal = (parseFloat(bot.state?.balance_base) || 0) * bot.last_price;
+        cvEl.textContent = coinVal.toFixed(2) + ' EUR';
+      }
+
+      // Offene Trades
+      const otEl = card.querySelector('[data-role="open-trades"]');
+      if (otEl) {
+        const count = (bot.open_trades || []).length;
+        otEl.textContent = count;
+        otEl.style.color = count > 0 ? '#58a6ff' : '#484f58';
+      }
+
+      // Aktualisiert
+      const agoEl = card.querySelector('[data-role="ago"]');
+      if (agoEl) agoEl.textContent = `vor ${bot.ago}`;
+    });
+  }
+
+  // Sofort beim Laden + alle 5s
+  updateCards();
+  setInterval(updateCards, 5000);
+
+  // ── Market-Suche ──────────────────────────────────────────────────
+  let _allMarkets = [];
+
+  function _priceFmt(p) {
+    if (!p) return '–';
+    if (p >= 1000) return p.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' €';
+    if (p >= 1)    return p.toFixed(4) + ' €';
+    if (p >= 0.01) return p.toFixed(6) + ' €';
+    return p.toFixed(8) + ' €';
+  }
+
+  async function openNewBotDialog() {
+    const dlg = document.getElementById('new-bot-dialog');
+    document.getElementById('nb-symbol').value = '';
+    document.getElementById('nb-error').textContent = '';
+    document.getElementById('nb-market-dd').style.display = 'none';
+    dlg.showModal();
+
+    if (_allMarkets.length === 0) {
+      const inp = document.getElementById('nb-symbol');
+      inp.placeholder = 'Lade Märkte von Kraken…';
+      inp.disabled = true;
+      try {
+        const res  = await fetch('/api/markets');
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        _allMarkets = data;
+      } catch (e) {
+        document.getElementById('nb-error').textContent = 'Märkte konnten nicht geladen werden: ' + e.message;
+      }
+      inp.disabled = false;
+      inp.placeholder = 'Suchen… z.B. BTC oder Bitcoin';
+      inp.focus();
+    } else {
+      const inp = document.getElementById('nb-symbol');
+      inp.placeholder = 'Suchen… z.B. BTC oder Bitcoin';
+      inp.focus();
+    }
+  }
+
+  function filterMarkets(query) {
+    const dd = document.getElementById('nb-market-dd');
+    if (!_allMarkets.length) { dd.style.display = 'none'; return; }
+    const q = query.toLowerCase();
+    const matches = q
+      ? _allMarkets.filter(m =>
+          m.symbol.toLowerCase().includes(q) || m.base.toLowerCase().includes(q))
+      : _allMarkets;
+    if (!matches.length) { dd.style.display = 'none'; return; }
+    dd.innerHTML = matches.slice(0, 60).map(m =>
+      `<div class="market-opt" onmousedown="selectMarket('${m.symbol}')">
+         <span class="m-sym">${m.symbol}</span>
+         <span class="m-base">${m.base}</span>
+         <span class="m-price">${_priceFmt(m.last)}</span>
+       </div>`
+    ).join('');
+    dd.style.display = 'block';
+  }
+
+  function showMarketDd() {
+    filterMarkets(document.getElementById('nb-symbol').value);
+  }
+
+  function selectMarket(symbol) {
+    document.getElementById('nb-symbol').value = symbol;
+    document.getElementById('nb-market-dd').style.display = 'none';
+  }
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.market-wrap')) {
+      const dd = document.getElementById('nb-market-dd');
+      if (dd) dd.style.display = 'none';
+    }
+  });
+
+  // ── Bot starten ───────────────────────────────────────────────────
+  async function startBot() {
+    const symbol = document.getElementById('nb-symbol').value.trim().toUpperCase().replace(/\s+/g, '');
+    const errEl  = document.getElementById('nb-error');
+    const btn    = document.getElementById('nb-submit');
+    errEl.textContent = '';
+
+    if (!symbol || !symbol.includes('/')) {
+      errEl.textContent = 'Symbol ungültig – Format: BTC/EUR';
+      return;
+    }
+
+    btn.textContent = '…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch('/api/bot/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol,
+          timeframe:      document.getElementById('nb-tf').value,
+          fast:           parseInt(document.getElementById('nb-fast').value),
+          slow:           parseInt(document.getElementById('nb-slow').value),
+          sl:             parseFloat(document.getElementById('nb-sl').value) / 100,
+          tp:             parseFloat(document.getElementById('nb-tp').value) / 100,
+          safety_buffer:  parseFloat(document.getElementById('nb-buf').value) / 100,
+          dry_run:        document.getElementById('nb-dry').checked,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        document.getElementById('new-bot-dialog').close();
+        setTimeout(() => location.reload(), 1500); // DB braucht kurz
+      } else {
+        errEl.textContent = data.error || 'Fehler beim Starten';
+      }
+    } catch (e) {
+      errEl.textContent = 'Verbindungsfehler';
+    }
+    btn.textContent = '▶ Starten';
+    btn.disabled = false;
+  }
+
+  // ── Bot (neu) starten ────────────────────────────────────────────
+  async function restartBot(event, btn) {
+    event.stopPropagation();
+    const cfg  = JSON.parse(btn.dataset.cfg);
+    const orig = btn.textContent;
+    btn.textContent = '…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch('/api/bot/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol:         cfg.symbol,
+          timeframe:      cfg.timeframe  || '5m',
+          fast:           cfg.fast       || 9,
+          slow:           cfg.slow       || 21,
+          sl:             (cfg.sl        || 3)  / 100,
+          tp:             (cfg.tp        || 6)  / 100,
+          safety_buffer:  0.10,
+          dry_run:        cfg.dry_run    || false,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        btn.textContent = '✓ Gestartet';
+        btn.style.borderColor = '#3fb950';
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        btn.textContent = '✗ ' + (data.error || 'Fehler');
+        btn.style.borderColor = '#f85149';
+        btn.style.color = '#f85149';
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; btn.style = ''; }, 4000);
+      }
+    } catch (e) {
+      btn.textContent = '✗ Verbindungsfehler';
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    }
+  }
+
+  // ── Bot stoppen ───────────────────────────────────────────────────
+  async function stopBot(event, symbol, btn) {
+    event.stopPropagation(); // Section nicht ein-/ausklappen
+    if (!confirm(`${symbol} wirklich stoppen?`)) return;
+
+    const orig = btn.textContent;
+    btn.textContent = '…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch('/api/bot/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        btn.textContent = '✓ Gestoppt';
+        btn.style.borderColor = '#3fb950';
+        btn.style.color = '#3fb950';
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        btn.textContent = '✗ Fehler';
+        btn.style.borderColor = '#f85149';
+        btn.title = data.error || 'Fehler beim Stoppen';
+        console.error('Stop-Fehler:', data.error);
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; btn.style = ''; }, 4000);
+      }
+    } catch (e) {
+      btn.textContent = '✗ Verbindungsfehler';
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    }
+  }
+
+  // ── Bot löschen ──────────────────────────────────────────────────
+  let _deleteSymbol = '';
+
+  function openDeleteDialog(event, symbol) {
+    event.stopPropagation();
+    _deleteSymbol = symbol;
+    document.getElementById('delete-bot-name').textContent = symbol;
+    document.getElementById('delete-keep-db').checked = true;
+    document.getElementById('delete-bot-error').textContent = '';
+    const btn = document.getElementById('delete-confirm-btn');
+    btn.textContent = '✕ Endgültig löschen';
+    btn.disabled = false;
+    document.getElementById('delete-bot-dialog').showModal();
+  }
+
+  async function confirmDeleteBot() {
+    const keepDb = document.getElementById('delete-keep-db').checked;
+    const btn    = document.getElementById('delete-confirm-btn');
+    btn.textContent = '…';
+    btn.disabled = true;
+    try {
+      const res  = await fetch('/api/bot/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: _deleteSymbol, keep_db: keepDb }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        document.getElementById('delete-bot-dialog').close();
+        setTimeout(() => location.reload(), 500);
+      } else {
+        document.getElementById('delete-bot-error').textContent = data.error || 'Fehler';
+        btn.textContent = '✕ Endgültig löschen';
+        btn.disabled = false;
+      }
+    } catch (e) {
+      document.getElementById('delete-bot-error').textContent = 'Verbindungsfehler';
+      btn.textContent = '✕ Endgültig löschen';
+      btn.disabled = false;
+    }
+  }
+
+  // ── SL/TP adaptive +/− Buttons ────────────────────────────────────
+  // Schrittweite so, dass 1 Klick ≈ 1.5 EUR P&L-Änderung ergibt
+  function slTpStep(amount) {
+    const raw = 1.5 / Math.max(amount, 1e-12);
+    // auf 1 signifikante Stelle runden (z.B. 1234 → 1000, 0.0078 → 0.008)
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    return Math.round(raw / mag) * mag;
+  }
+
+  function slTpDecimals(step) {
+    if (step >= 1) return 2;
+    return Math.ceil(-Math.log10(step)) + 1;
+  }
+
+  function adj(inputId, amount, dir) {
+    const inp  = document.getElementById(inputId);
+    const step = slTpStep(amount);
+    const dec  = slTpDecimals(step);
+    const val  = parseFloat(inp.value) || 0;
+    inp.value  = Math.max(0, val + dir * step).toFixed(dec);
+  }
+
+  // ── SL/TP manuell speichern ────────────────────────────────────────
+  async function saveSlTp(symbol, clientId, btn) {
+    const sl = parseFloat(document.getElementById(`sl-${clientId}`).value);
+    const tp = parseFloat(document.getElementById(`tp-${clientId}`).value);
+
+    const reset = () => {
+      btn.textContent = 'Speichern';
+      btn.className = 'sltp-btn';
+    };
+
+    if (isNaN(sl) || isNaN(tp) || sl <= 0 || tp <= 0 || sl >= tp) {
+      btn.textContent = '✗ SL < TP erforderlich';
+      btn.className = 'sltp-btn sltp-err';
+      setTimeout(reset, 2500);
+      return;
+    }
+
+    btn.textContent = '…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(
+        `/api/trade/${encodeURIComponent(symbol)}/${clientId}/sltp`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sl_price: sl, tp_price: tp }),
+        }
+      );
+      const data = await res.json();
+      if (data.ok) {
+        btn.textContent = '✓ Gespeichert';
+        btn.className = 'sltp-btn sltp-ok';
+      } else {
+        btn.textContent = `✗ ${data.error || 'Fehler'}`;
+        btn.className = 'sltp-btn sltp-err';
+      }
+    } catch (e) {
+      btn.textContent = '✗ Verbindungsfehler';
+      btn.className = 'sltp-btn sltp-err';
+    }
+
+    btn.disabled = false;
+    setTimeout(reset, 2500);
+  }
+</script>
+
+</body>
+</html>

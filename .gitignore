@@ -1,0 +1,10 @@
+.env
+db/
+logs/
+run/
+__pycache__/
+*.pyc
+.venv/
+venv/
+botvenv/
+.claude/

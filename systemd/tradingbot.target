@@ -1,0 +1,6 @@
+[Unit]
+Description=Alle Trading Bot Instanzen
+After=network.target
+
+[Install]
+WantedBy=multi-user.target
