@@ -1,3 +1,10 @@
 ccxt>=4.3.0
 python-dotenv>=1.0.0
 flask>=3.0.0
+
+# News-Agent
+vaderSentiment>=3.3.2
+textblob>=0.18.0
+python-telegram-bot>=21.0
+feedparser>=6.0.0
+requests>=2.31.0

@@ -1,30 +1,40 @@
-# Trading Bot
+# TradingBot
 
-Automatisierter Krypto-Trading-Bot für Kraken mit Web-Dashboard.
+Automatisierter Krypto-Trading-Bot für Kraken mit Web-Dashboard und News-Agent.
 Strategie: SMA-Crossover mit synthetischem Stop-Loss / Take-Profit.
+Mehrere Bot-Instanzen parallel, je eine pro Coin, je eine SQLite-DB.
 
 ---
 
 ## Projektstruktur
 
 ```
-TradingBot/
+bot/
 ├── main.py                  # Entry Point – eine Instanz pro Coin
 ├── bot/
-│   ├── config.py            # Alle Konfigurationsparameter
+│   ├── config.py            # Alle Konfigurationsparameter (dataclasses)
 │   ├── data_feed.py         # Marktdaten via CCXT (OHLCV, Balance, Orders)
 │   ├── strategy.py          # SMA-Crossover → BUY / SELL / HOLD
-│   ├── risk.py              # Position Sizing, Guardrails
+│   ├── risk.py              # Dynamisches Position Sizing
 │   ├── execution.py         # Order-Submit, Dry-Run, Post-Trade-Verify
 │   ├── sl_tp.py             # Stop-Loss / Take-Profit Monitor
 │   ├── persistence.py       # SQLite (orders, trades, errors, bot_state)
 │   └── ops.py               # Logging, Retry/Backoff, Circuit Breaker
+├── news/
+│   ├── config.py            # NewsAgentConfig (dataclass)
+│   ├── fetcher.py           # CryptoPanic, RSS, Google News, Twitter
+│   ├── sentiment.py         # VADER + TextBlob Sentiment-Analyse
+│   ├── agent.py             # Orchestrator: fetch → dedupe → score → alert
+│   └── telegram_bot.py      # Telegram Bot mit Inline-Buttons
 ├── web/
-│   ├── app.py               # Flask Dashboard (Multi-Bot)
-│   └── templates/
-│       └── index.html       # Dark-Theme UI, Auto-Refresh 15s
-├── db/                      # SQLite-DBs (eine pro Instanz, auto-erstellt)
-├── logs/                    # Log-Dateien (eine pro Instanz, auto-erstellt)
+│   ├── app.py               # Flask Dashboard (Port 5001)
+│   └── templates/index.html # Dark-Theme UI, Multi-Bot, Auto-Refresh
+├── db/                      # SQLite-DBs (eine pro Bot + news.db)
+├── db/archive/              # Archivierte DBs
+├── logs/                    # Log-Dateien pro Bot
+├── bot.conf.d/              # Konfiguration pro Bot-Instanz (systemd)
+├── systemd/                 # Service-Dateien + install.sh
+├── news_agent.py            # Entry Point News-Agent
 ├── .env                     # API-Keys (nicht committen!)
 ├── .env.example             # Vorlage
 └── requirements.txt
@@ -35,13 +45,26 @@ TradingBot/
 ## Setup
 
 ```bash
-# 1. Abhängigkeiten installieren
+# 1. Virtuelle Umgebung + Abhängigkeiten
+python -m venv botvenv
+source botvenv/bin/activate
 pip install -r requirements.txt
 
 # 2. API-Keys eintragen
 cp .env.example .env
-# .env bearbeiten: KRAKEN_API_KEY und KRAKEN_API_SECRET setzen
+nano .env
 ```
+
+**`.env` Variablen:**
+
+| Variable | Pflicht | Beschreibung |
+|----------|---------|--------------|
+| `KRAKEN_API_KEY` | ✅ | Kraken API Key (nur Trade-Rechte, kein Withdraw!) |
+| `KRAKEN_API_SECRET` | ✅ | Kraken API Secret |
+| `TELEGRAM_BOT_TOKEN` | News-Agent | Token von @BotFather |
+| `TELEGRAM_CHAT_ID` | News-Agent | Eigene Telegram User-ID |
+| `CRYPTOPANIC_API_KEY` | optional | Kostenlos auf cryptopanic.com |
+| `TWITTER_BEARER_TOKEN` | optional | Twitter/X Basic API (~$100/Monat) |
 
 **Kraken API-Key Berechtigungen** (nur diese aktivieren):
 - ✅ Query Funds
@@ -56,26 +79,26 @@ cp .env.example .env
 
 ```bash
 # Dry-Run (kein echter Handel, zum Testen)
-python main.py --symbol SNX/EUR --dry-run
+python main.py --symbol BTC/EUR --dry-run
 
 # Live
-python main.py --symbol SNX/EUR
-python main.py --symbol BTC/EUR --timeframe 1m --fast 5 --slow 13
+python main.py --symbol BTC/EUR
 python main.py --symbol ETH/EUR --sl 0.025 --tp 0.05
 ```
 
-### Alle CLI-Optionen
+### CLI-Optionen
 
-| Option | Beispiel | Beschreibung |
+| Option | Standard | Beschreibung |
 |--------|----------|--------------|
-| `--symbol` | `SNX/EUR` | Coin-Paar (Pflicht) |
-| `--timeframe` | `5m` | Kerzen-Intervall (default: 5m) |
-| `--fast` | `9` | Fast-SMA-Periode (default: 9) |
-| `--slow` | `21` | Slow-SMA-Periode (default: 21) |
-| `--sl` | `0.03` | Stop-Loss 3% (default: 0.03) |
-| `--tp` | `0.06` | Take-Profit 6% (default: 0.06) |
+| `--symbol` | – | Coin-Paar, z.B. `BTC/EUR` (Pflicht) |
+| `--timeframe` | `5m` | Kerzen-Intervall |
+| `--fast` | `9` | Fast-SMA-Periode |
+| `--slow` | `21` | Slow-SMA-Periode |
+| `--sl` | `0.03` | Stop-Loss (3%) |
+| `--tp` | `0.06` | Take-Profit (6%) |
+| `--safety-buffer` | `0.10` | Anteil des Kapitals der nie angefasst wird |
+| `--startup-delay` | `0` | Verzögerter Start in Sekunden (Kraken Rate-Limit) |
 | `--dry-run` | – | Kein echter Handel |
-| `--live` | – | Echter Handel |
 
 ---
 
@@ -83,98 +106,93 @@ python main.py --symbol ETH/EUR --sl 0.025 --tp 0.05
 
 ```bash
 python web/app.py
+# → http://<ip>:5001
 ```
 
-Erreichbar unter `http://<ip>:5000`
-Zeigt alle laufenden Instanzen automatisch (liest alle `db/*.db`).
+- Zeigt alle Bot-Instanzen automatisch (liest alle `db/*.db`)
+- Auto-Refresh: 60s (Seite), 5s (Cards via API)
+- **Bot-Verwaltung**: Hinzufügen / Starten / Stoppen / Löschen direkt im Browser
+- **SL/TP editierbar**: ± Buttons mit adaptiver Schrittweite (~1.50€ P&L pro Klick)
+- P&L-Anzeige: Netto nach Kraken-Gebühren (0.26% pro Order)
 
 ---
 
-## Konfiguration (`bot/config.py`)
-
-```python
-class BotConfig:
-    symbol:       "SNX/EUR"   # Coin-Paar
-    timeframe:    "5m"        # Kerzen-Intervall
-    fast_period:  9           # Fast SMA
-    slow_period:  21          # Slow SMA
-    poll_seconds: 20          # Polling-Intervall
-    dry_run:      False       # True = kein echter Handel
-
-class RiskConfig:
-    quote_risk_fraction: 0.95  # 95% des Bestands pro Trade
-    max_open_orders:     1
-    min_order_quote:     10.0  # Mindestorder in Quote-Währung (€)
-    max_consecutive_errors: 5  # Circuit Breaker
-    stop_loss_pct:       0.03  # 3% Stop-Loss
-    take_profit_pct:     0.06  # 6% Take-Profit
-```
-
----
-
-## Als systemd-Service (Raspberry Pi)
-
-Datei: `/etc/systemd/system/tradingbot@.service`
-
-```ini
-[Unit]
-Description=Trading Bot – %i
-After=network.target
-
-[Service]
-User=xxx
-WorkingDirectory=/home/xxx/bot
-EnvironmentFile=/home/xxx/bot/.env
-ExecStart=/home/xxx/bot/botvenv/bin/python /home/xxx/bot/main.py --symbol %i
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-NoNewPrivileges=true
-PrivateTmp=true
-TimeoutStopSec=20
-KillSignal=SIGINT
-
-[Install]
-WantedBy=multi-user.target
-```
+## systemd (Raspberry Pi – empfohlen)
 
 ```bash
-# Mehrere Instanzen
-sudo systemctl enable --now tradingbot@SNX_EUR
-sudo systemctl enable --now tradingbot@BTC_EUR
-sudo systemctl enable --now tradingbot@ETH_EUR
+# Einmalig einrichten (ersetzt DEIN_USER/DEIN_BOTDIR)
+bash systemd/install.sh
+
+# Starten
+sudo systemctl start tradingbot.target
+sudo systemctl start news-agent
+
+# Status
+sudo systemctl status 'tradingbot@*'
+sudo systemctl status news-agent
 
 # Logs
-journalctl -u tradingbot@SNX_EUR -f
-journalctl -u "tradingbot@*" -f
+journalctl -u tradingbot@BTC_EUR -f
+journalctl -u tradingbot-web -f
+journalctl -u news-agent -f
 ```
 
-Web-Dashboard-Service: `/etc/systemd/system/tradingbot-web.service`
+### Bot-Konfiguration (`bot.conf.d/`)
+
+Jede Datei `bot.conf.d/SYMBOL.conf` aktiviert eine Bot-Instanz beim Start:
 
 ```ini
-[Unit]
-Description=Trading Bot Web Dashboard
-After=network.target
-
-[Service]
-User=xxx
-WorkingDirectory=/home/xxx/bot
-EnvironmentFile=/home/xxx/bot/.env
-ExecStart=/home/xxx/bot/botvenv/bin/python /home/xxx/bot/web/app.py
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
+# bot.conf.d/BTC_EUR.conf
+BOT_SYMBOL=BTC/EUR
+BOT_ARGS=--timeframe 5m --fast 9 --slow 21 --sl 0.02 --tp 0.04 --safety-buffer 0.10 --startup-delay 20
 ```
+
+---
+
+## News-Agent
+
+Überwacht Krypto-News (RSS, Google News, CryptoPanic, optional Twitter),
+berechnet Sentiment-Scores und sendet bei relevanten Ereignissen Telegram-Alerts
+mit Inline-Buttons zur Bot-Steuerung.
 
 ```bash
-sudo systemctl enable --now tradingbot-web
+# Testen (kein Telegram)
+python news_agent.py --dry-run --once
+
+# Telegram-Verbindung testen
+python news_agent.py --test-telegram
+
+# Dauerhaft starten
+python news_agent.py
+# oder via systemd:
+sudo systemctl start news-agent
 ```
+
+### CLI-Optionen
+
+| Option | Beschreibung |
+|--------|--------------|
+| `--dry-run` | Fetch + Log, kein Telegram |
+| `--once` | Einmaliger Cycle, dann Exit |
+| `--test-telegram` | Sendet Test-Nachricht, dann Exit |
+| `--interval MINUTEN` | Poll-Interval (Standard: 10) |
+| `--threshold SCORE` | Sentiment-Schwelle 0.0–1.0 (Standard: 0.5) |
+
+### Telegram-Buttons
+
+| Button | Wann | Aktion |
+|--------|------|--------|
+| `🛑 BTC/EUR stoppen` | Bearish-Alert, Bot läuft | POST /api/bot/stop |
+| `▶ ADA/EUR starten` | Bullish-Alert, Bot läuft nicht | POST /api/bot/start |
+| `✅ Ignorieren` | Immer | Alert als dismissed markieren |
+| `/status` | Jederzeit | Zeigt alle Bot-Stati |
+
+### Sentiment-Scoring
+
+- **VADER** (70%) + **TextBlob** (30%) → kombinierter Score −1.0 bis +1.0
+- `bearish` < −0.5 | `neutral` −0.5…+0.5 | `bullish` > +0.5
+- Quellen: CryptoPanic API, RSS (CoinTelegraph, Decrypt, CoinDesk), Google News, Twitter (optional)
+- Deduplizierung: gleiche URL löst 24h keinen zweiten Alert aus
 
 ---
 
@@ -186,14 +204,40 @@ SELL → Fast SMA (9) kreuzt Slow SMA (21) von oben nach unten
 HOLD → kein Crossover
 ```
 
-Nach jedem BUY wird automatisch ein synthetischer Stop-Loss und Take-Profit gesetzt.
-Der Bot prüft diese in jeder Iteration gegen den aktuellen Preis.
+Nach jedem BUY: synthetischer Stop-Loss + Take-Profit wird gesetzt und
+in jeder Loop-Iteration gegen den aktuellen Preis geprüft.
+
+### Positionsgröße
+
+```
+usable    = balance_EUR × (1 − safety_buffer)   # z.B. × 0.90
+per_bot   = usable / anzahl_aktive_bots
+trade_EUR = per_bot × quote_risk_fraction        # z.B. × 0.95
+amount    = trade_EUR / aktueller_preis
+```
+
+---
+
+## Remote-Zugriff via WireGuard VPN
+
+```bash
+# VPN-Client hinzufügen
+pivpn add
+
+# QR-Code für Handy anzeigen
+pivpn -qr <Name>
+
+# Status
+sudo wg show
+```
+
+Nach VPN-Verbindung: `http://10.244.199.1:5001` im Browser.
 
 ---
 
 ## Sicherheit
 
-- API-Keys mit minimalen Rechten (kein Withdraw)
-- Separate Keys pro Bot-Umgebung empfohlen
-- Circuit Breaker stoppt den Bot nach 5 konsekutiven Fehlern
+- Kraken API-Keys mit minimalen Rechten (kein Withdraw)
 - `.env` ist gitignored
+- Circuit Breaker: Bot stoppt nach 5 konsekutiven Fehlern
+- `NoNewPrivileges=true` in allen systemd-Services
