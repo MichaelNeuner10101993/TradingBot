@@ -54,12 +54,15 @@ done
 
 sudo systemctl enable tradingbot-web.service
 sudo systemctl enable tradingbot.target
+sudo systemctl enable news-agent.service
 
 echo ""
 echo "=== Fertig! ==="
 echo ""
-echo "Starten:   sudo systemctl start tradingbot.target"
-echo "Stoppen:   sudo systemctl stop tradingbot.target"
-echo "Status:    sudo systemctl status 'tradingbot@*'"
-echo "Logs Bot:  journalctl -u tradingbot@SNX_EUR -f"
-echo "Logs Web:  journalctl -u tradingbot-web -f"
+echo "Starten:       sudo systemctl start tradingbot.target"
+echo "Stoppen:       sudo systemctl stop tradingbot.target"
+echo "Status:        sudo systemctl status 'tradingbot@*'"
+echo "Logs Bot:      journalctl -u tradingbot@SNX_EUR -f"
+echo "Logs Web:      journalctl -u tradingbot-web -f"
+echo "News-Agent:    sudo systemctl start news-agent"
+echo "Logs News:     journalctl -u news-agent -f"

@@ -1,0 +1,19 @@
+[Unit]
+Description=TradingBot News-Agent (Krypto-Nachrichten + Telegram)
+After=network.target tradingbot-web.service
+Wants=tradingbot-web.service
+
+[Service]
+Type=simple
+User=DEIN_USER
+WorkingDirectory=DEIN_BOTDIR
+EnvironmentFile=DEIN_BOTDIR/.env
+ExecStart=DEIN_BOTDIR/botvenv/bin/python DEIN_BOTDIR/news_agent.py
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
