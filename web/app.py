@@ -211,10 +211,14 @@ def _load_bot(db_path: str) -> dict:
             except Exception:
                 pass
 
-        regime     = state.get("supervisor_regime", "–")
-        adx_val    = state.get("supervisor_adx", "–")
-        atr_pct    = state.get("supervisor_atr_pct", "–")
-        supv_update = state.get("supervisor_last_update", "")
+        regime        = state.get("supervisor_regime", "–")
+        adx_val       = state.get("supervisor_adx", "–")
+        atr_pct       = state.get("supervisor_atr_pct", "–")
+        supv_update   = state.get("supervisor_last_update", "")
+        strategy_name = state.get("strategy_name", "Standard")
+        sim_pnl       = state.get("sim_pnl", "–")
+        fast_period   = state.get("fast_period", "9")
+        slow_period   = state.get("slow_period", "21")
 
         return {
             "symbol":        symbol,
@@ -229,6 +233,10 @@ def _load_bot(db_path: str) -> dict:
             "regime_adx":    adx_val,
             "regime_atr_pct": atr_pct,
             "regime_ago":    _time_ago(supv_update),
+            "strategy_name": strategy_name,
+            "sim_pnl":       sim_pnl,
+            "fast_period":   fast_period,
+            "slow_period":   slow_period,
             "last_update":   state.get("last_update", ""),
             "ago":           _time_ago(state.get("last_update", "")),
             "dry_run":       state.get("dry_run") == "True",
@@ -260,6 +268,7 @@ def _load_bot(db_path: str) -> dict:
             "total_pnl_eur": 0, "total_expect_profit_eur": 0, "total_expect_loss_eur": 0,
             "process_running": False,
             "regime": "–", "regime_adx": "–", "regime_atr_pct": "–", "regime_ago": "–",
+            "strategy_name": "Standard", "sim_pnl": "–", "fast_period": "9", "slow_period": "21",
         }
 
 

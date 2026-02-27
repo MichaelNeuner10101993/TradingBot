@@ -399,6 +399,21 @@
           {{ _r }}
         </span>
       </div>
+      <div class="row">
+        <span>Strategie</span>
+        <span data-role="strategy" style="color:#8b949e">
+          <span data-role="strategy-name">{{ bot.strategy_name }}</span>
+          <span style="color:#484f58">({{ bot.fast_period }}/{{ bot.slow_period }})</span>
+        </span>
+      </div>
+      <div class="row">
+        <span>Sim&nbsp;P&L</span>
+        {% set _sp = bot.sim_pnl %}
+        <span data-role="sim-pnl"
+              style="color:{{ '#3fb950' if _sp not in ('–','') and _sp|float > 0 else ('#f85149' if _sp not in ('–','') and _sp|float < 0 else '#484f58') }}">
+          {{ _sp }}{% if _sp not in ('–','') %}%{% endif %}
+        </span>
+      </div>
       {% if bot.open_trades %}
       <div style="border-top:1px solid #21262d;margin-top:8px;padding-top:8px">
         <div class="row">
@@ -868,6 +883,17 @@
           r === 'SIDEWAYS' ? 'sideways' :
           r === 'VOLATILE' ? 'volatile' : 'noregime'
         );
+      }
+
+      // Strategie
+      const stratNameEl = card.querySelector('[data-role="strategy-name"]');
+      if (stratNameEl) stratNameEl.textContent = bot.strategy_name || 'Standard';
+      const simPnlEl = card.querySelector('[data-role="sim-pnl"]');
+      if (simPnlEl) {
+        const sp = bot.sim_pnl || '–';
+        const spN = parseFloat(sp);
+        simPnlEl.textContent = isNaN(spN) ? '–' : sp + '%';
+        simPnlEl.style.color = isNaN(spN) ? '#484f58' : spN > 0 ? '#3fb950' : spN < 0 ? '#f85149' : '#484f58';
       }
 
       // Aktualisiert

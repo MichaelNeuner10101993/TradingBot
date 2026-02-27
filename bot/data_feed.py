@@ -27,7 +27,7 @@ class DataFeed:
     @retry_backoff(retries=3, base_delay=2.0, exceptions=(ccxt.NetworkError,), no_retry=(ccxt.DDoSProtection,))
     def fetch_ohlcv(self) -> list[list]:
         """Gibt OHLCV-Candles zurück. Limit = slow + Puffer."""
-        limit = self.cfg.slow_period + 10
+        limit = max(self.cfg.slow_period + 10, 100)
         candles = self.ex.fetch_ohlcv(
             self.cfg.symbol,
             timeframe=self.cfg.timeframe,

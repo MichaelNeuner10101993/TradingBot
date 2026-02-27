@@ -107,8 +107,13 @@ def main():
                         risk_cfg.rsi_sell_min = float(_sv.get("supervisor_rsi_sell_min", risk_cfg.rsi_sell_min))
                         risk_cfg.atr_sl_mult  = float(_sv.get("supervisor_atr_sl_mult",  risk_cfg.atr_sl_mult))
                         risk_cfg.atr_tp_mult  = float(_sv.get("supervisor_atr_tp_mult",  risk_cfg.atr_tp_mult))
+                        if _sv.get("supervisor_fast"):
+                            bot_cfg.fast_period = int(_sv.get("supervisor_fast", bot_cfg.fast_period))
+                            bot_cfg.slow_period = int(_sv.get("supervisor_slow", bot_cfg.slow_period))
                         log.debug(
                             f"Regime={_sv['supervisor_regime']} | "
+                            f"Strategie={_sv.get('supervisor_strategy_name','?')} "
+                            f"f={bot_cfg.fast_period}/s={bot_cfg.slow_period} | "
                             f"RSI<{risk_cfg.rsi_buy_max} RSI>{risk_cfg.rsi_sell_min} | "
                             f"SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult}"
                         )
@@ -179,6 +184,8 @@ def main():
                 db.set_state("slow_period",    str(bot_cfg.slow_period))
                 db.set_state("rsi",            rsi_str)
                 db.set_state("regime",         _sv.get("supervisor_regime", "–"))
+                db.set_state("strategy_name",  _sv.get("supervisor_strategy_name", "Standard"))
+                db.set_state("sim_pnl",        _sv.get("supervisor_sim_pnl", "–"))
                 db.set_state("status",         "running")
 
                 breaker.success()
