@@ -92,6 +92,11 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("start_bot", self._cmd_start_bot))
         self._app.add_handler(CommandHandler("stop_bot",  self._cmd_stop_bot))
         self._app.add_handler(CommandHandler("stop_all",  self._cmd_stop_all))
+        self._app.add_handler(CommandHandler("buy",       self._cmd_buy))
+        self._app.add_handler(CommandHandler("sell",      self._cmd_sell))
+        self._app.add_handler(CommandHandler("set_sl",    self._cmd_set_sl))
+        self._app.add_handler(CommandHandler("set_tp",    self._cmd_set_tp))
+        self._app.add_handler(CommandHandler("params",    self._cmd_params))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -302,11 +307,19 @@ class TelegramNewsBot:
             return
         await update.message.reply_text(
             "📋 *Befehle:*\n\n"
-            "/status – Status aller Bots\n"
-            "/start\\_bot BTC/EUR – Bot starten\n"
-            "/stop\\_bot BTC/EUR – Bot stoppen\n"
-            "/stop\\_all – Alle Bots sofort stoppen\n"
-            "/help – Diese Übersicht",
+            "📊 *Übersicht*\n"
+            "/status \\- Status aller Bots\n"
+            "/params BTC/EUR \\- Parameter anzeigen\n\n"
+            "▶ *Bot\\-Verwaltung*\n"
+            "/start\\_bot BTC/EUR \\- Bot starten\n"
+            "/stop\\_bot BTC/EUR \\- Bot stoppen\n"
+            "/stop\\_all \\- Alle Bots sofort stoppen\n\n"
+            "⚡ *Manueller Handel*\n"
+            "/buy BTC/EUR \\- Kauf erzwingen \\(nächster Loop\\)\n"
+            "/sell BTC/EUR \\- Verkauf erzwingen\n\n"
+            "🎯 *SL/TP anpassen*\n"
+            "/set\\_sl BTC/EUR 2\\.0 \\- SL auf 2% unter Entry\n"
+            "/set\\_tp BTC/EUR 4\\.0 \\- TP auf 4% über Entry",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
@@ -404,6 +417,153 @@ class TelegramNewsBot:
             lines.append(f"  ✅ {sym} gestoppt" if r["ok"] else f"  ❌ {sym}: {_esc(r.get('error',''))}")
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
 
+    async def _cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt ein Force-BUY-Signal für einen Bot."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Verwendung: `/buy BTC/EUR`\n_Führt beim nächsten Bot\\-Loop einen Kauf aus\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = " ".join(context.args).upper().strip()
+        result = _call_force_signal(self.cfg.web_api_base, symbol, "BUY")
+        if result["ok"]:
+            await update.message.reply_text(
+                f"📈 *Force\\-BUY* für *{_esc(symbol)}* gesetzt\\.\n"
+                f"_Wird beim nächsten Loop \\(\\~60s\\) ausgeführt\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    async def _cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt ein Force-SELL-Signal für einen Bot."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Verwendung: `/sell BTC/EUR`\n_Schließt die offene Position beim nächsten Loop\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = " ".join(context.args).upper().strip()
+        result = _call_force_signal(self.cfg.web_api_base, symbol, "SELL")
+        if result["ok"]:
+            await update.message.reply_text(
+                f"📉 *Force\\-SELL* für *{_esc(symbol)}* gesetzt\\.\n"
+                f"_Wird beim nächsten Loop \\(\\~60s\\) ausgeführt\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    async def _cmd_set_sl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt Stop-Loss in % vom Entry-Preis. Beispiel: /set_sl BTC/EUR 2.0"""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Verwendung: `/set_sl BTC/EUR 2\\.0`\n_Setzt SL auf 2% unter Entry\\-Preis\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = context.args[0].upper()
+        try:
+            pct = float(context.args[1])
+            if pct <= 0 or pct >= 50:
+                raise ValueError("Wert muss zwischen 0 und 50 liegen")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        result = _call_set_sltp_pct(self.cfg.web_api_base, symbol, sl_pct=pct)
+        if result["ok"]:
+            await update.message.reply_text(
+                f"✅ *{_esc(symbol)}* SL auf `{pct}%` unter Entry gesetzt\\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    async def _cmd_set_tp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt Take-Profit in % vom Entry-Preis. Beispiel: /set_tp BTC/EUR 4.0"""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Verwendung: `/set_tp BTC/EUR 4\\.0`\n_Setzt TP auf 4% über Entry\\-Preis\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = context.args[0].upper()
+        try:
+            pct = float(context.args[1])
+            if pct <= 0 or pct >= 100:
+                raise ValueError("Wert muss zwischen 0 und 100 liegen")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        result = _call_set_sltp_pct(self.cfg.web_api_base, symbol, tp_pct=pct)
+        if result["ok"]:
+            await update.message.reply_text(
+                f"✅ *{_esc(symbol)}* TP auf `{pct}%` über Entry gesetzt\\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    async def _cmd_params(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt aktuelle Parameter eines Bots."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Verwendung: `/params BTC/EUR`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+        symbol = " ".join(context.args).upper().strip()
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            bots = {b["symbol"]: b for b in resp.json()}
+            if symbol not in bots:
+                await update.message.reply_text(
+                    f"❌ Bot *{_esc(symbol)}* nicht gefunden\\.", parse_mode=ParseMode.MARKDOWN_V2
+                )
+                return
+            b   = bots[symbol]
+            st  = b.get("state", {})
+            lines = [
+                f"⚙️ *Parameter: {_esc(symbol)}*\n",
+                f"SMA:     Fast `{st.get('fast_period','?')}` / Slow `{st.get('slow_period','?')}`",
+                f"RSI:     buy \\< `{st.get('supervisor_rsi_buy_max', st.get('rsi_buy_max','?'))}` "
+                f"/ sell \\> `{st.get('supervisor_rsi_sell_min', st.get('rsi_sell_min','?'))}`",
+                f"ATR SL:  `×{st.get('supervisor_atr_sl_mult','?')}`  "
+                f"ATR TP: `×{st.get('supervisor_atr_tp_mult','?')}`",
+                f"Regime:  `{b.get('regime','–')}`  ADX: `{st.get('supervisor_adx','–')}`",
+                f"Strategie: `{b.get('strategy_name','–')}` \\(Sim: `{b.get('sim_pnl','–')}%`\\)",
+                f"Fallback SL: `{float(st.get('sl_pct',0.03))*100:.1f}%` "
+                f"/ TP: `{float(st.get('tp_pct',0.06))*100:.1f}%`",
+            ]
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
     # ------------------------------------------------------------------
     # Test-Nachricht
     # ------------------------------------------------------------------
@@ -496,3 +656,46 @@ def _call_stop_all_api(base_url: str) -> list[dict]:
     except Exception as e:
         logger.error("Fehler beim Holen der Bot-Liste: %s", e)
     return results
+
+
+def _call_force_signal(base_url: str, symbol: str, signal: str) -> dict:
+    """Setzt ein Force-Signal (BUY/SELL) via Web-API."""
+    try:
+        resp = requests.post(
+            f"{base_url}/api/bot/force_signal",
+            json={"symbol": symbol, "signal": signal},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _call_set_sltp_pct(
+    base_url: str,
+    symbol: str,
+    sl_pct: float | None = None,
+    tp_pct: float | None = None,
+) -> dict:
+    """Setzt SL/TP als Prozentsatz vom Entry-Preis."""
+    try:
+        payload: dict = {"symbol": symbol}
+        if sl_pct is not None:
+            payload["sl_pct"] = sl_pct
+        if tp_pct is not None:
+            payload["tp_pct"] = tp_pct
+        resp = requests.post(
+            f"{base_url}/api/bot/set_sltp_pct",
+            json=payload,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return {"ok": True}
+    except requests.HTTPError as e:
+        try:
+            return {"ok": False, "error": e.response.json().get("error", str(e))}
+        except Exception:
+            return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

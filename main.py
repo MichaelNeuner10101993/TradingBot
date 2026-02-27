@@ -130,8 +130,17 @@ def main():
                     risk_cfg.rsi_sell_min,
                 )
                 rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
+
+                # Force-Signal vom Telegram / Dashboard? (überschreibt berechnetes Signal)
+                _force = _sv.get("force_signal", "")
+                _is_forced = _force in ("BUY", "SELL")
+                if _is_forced:
+                    log.info(f"⚡ Force-Signal: {_force} (manuell gesetzt, überschreibt {signal})")
+                    signal = _force
+                    db.set_state("force_signal", "")  # einmalig verbrauchen
+
                 log.info(
-                    f"Signal={signal} | Preis={last_price:.4f} | RSI={rsi_str} | "
+                    f"Signal={signal}{'⚡' if _is_forced else ''} | Preis={last_price:.4f} | RSI={rsi_str} | "
                     f"{balance['quote_currency']}={balance['quote']:.2f} "
                     f"{balance['base_currency']}={balance['base']:.6f}"
                 )
@@ -155,8 +164,10 @@ def main():
                 ok, reason = risk.check_guardrails(open_orders, balance)
                 active_trades = db.get_open_trades(bot_cfg.symbol)
                 if active_trades:
-                    ok     = False
-                    reason = f"Offener Trade ({active_trades[0]['client_id'][:12]}…)"
+                    # Force-Sell darf trotz offenem Trade ausgeführt werden (schließt Position)
+                    if not (_is_forced and signal == "SELL"):
+                        ok     = False
+                        reason = f"Offener Trade ({active_trades[0]['client_id'][:12]}…)"
 
                 if not ok:
                     log.debug(f"Kein Trade: {reason}")

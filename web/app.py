@@ -440,6 +440,69 @@ def api_delete_bot():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/bot/force_signal", methods=["POST"])
+def api_force_signal():
+    """Setzt ein Force-Signal (BUY/SELL) das der Bot im nächsten Loop einmalig ausführt."""
+    try:
+        data   = request.get_json(force=True)
+        symbol = data.get("symbol", "").strip().upper()
+        signal = data.get("signal", "").upper()
+        if signal not in ("BUY", "SELL"):
+            return jsonify({"ok": False, "error": "Signal muss BUY oder SELL sein"}), 400
+        symbol_safe = symbol.replace("/", "_")
+        db_path = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if not os.path.exists(db_path):
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol} gefunden"}), 404
+        db = StateDB(db_path)
+        db.set_state("force_signal", signal)
+        db.close()
+        return jsonify({"ok": True, "symbol": symbol, "signal": signal})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/bot/set_sltp_pct", methods=["POST"])
+def api_set_sltp_pct():
+    """Setzt SL/TP als Prozentsatz vom Entry-Preis aller offenen Trades eines Bots."""
+    try:
+        data       = request.get_json(force=True)
+        symbol     = data.get("symbol", "").strip().upper()
+        sl_pct     = data.get("sl_pct")   # z.B. 2.0 → 2%
+        tp_pct     = data.get("tp_pct")   # z.B. 4.0 → 4%
+        symbol_safe = symbol.replace("/", "_")
+        db_path    = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if not os.path.exists(db_path):
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol} gefunden"}), 404
+
+        db     = StateDB(db_path)
+        trades = db.get_open_trades(symbol)
+        if not trades:
+            db.close()
+            return jsonify({"ok": False, "error": "Kein offener Trade"}), 404
+
+        updated = 0
+        for t in trades:
+            entry = t.get("entry_price") or 0
+            if not entry:
+                continue
+            new_sl = float(t.get("sl_price") or 0)
+            new_tp = float(t.get("tp_price") or 0)
+            if sl_pct is not None:
+                new_sl = entry * (1 - float(sl_pct) / 100)
+            if tp_pct is not None:
+                new_tp = entry * (1 + float(tp_pct) / 100)
+            if new_sl <= 0 or new_tp <= 0 or new_sl >= new_tp:
+                db.close()
+                return jsonify({"ok": False, "error": f"Ungültige SL/TP-Werte (SL={new_sl:.4f} TP={new_tp:.4f})"}), 400
+            db.update_trade_sltp(t["client_id"], new_sl, new_tp)
+            updated += 1
+
+        db.close()
+        return jsonify({"ok": True, "symbol": symbol, "updated_trades": updated})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/bot/stop", methods=["POST"])
 def api_stop_bot():
     try:
