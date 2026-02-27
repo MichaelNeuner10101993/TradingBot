@@ -22,6 +22,31 @@ DB_DIR = os.environ.get("BOT_DB_DIR", os.path.join(PROJECT_ROOT, "db"))
 KRAKEN_FEE = 0.0026  # Taker-Fee pro Order (0.26%); Round-Trip = 2 × 0.26% = 0.52%
 
 _markets_cache: dict = {"data": None, "ts": 0.0}
+_eur_rate_cache: dict = {"data": {}, "ts": 0.0}  # Quote-Currency → EUR-Kurs
+
+
+def _eur_rate(quote_currency: str) -> float:
+    """
+    Gibt den EUR-Wechselkurs für eine Quote-Currency zurück.
+    EUR → 1.0  |  USDT/USD → Kraken-Preis (5-Min-Cache).
+    Fallback: 1.0 wenn Rate nicht verfügbar.
+    """
+    import time
+    import ccxt as _ccxt
+    if quote_currency in ("EUR", ""):
+        return 1.0
+    now = time.time()
+    if now - _eur_rate_cache["ts"] < 300 and quote_currency in _eur_rate_cache["data"]:
+        return _eur_rate_cache["data"][quote_currency]
+    try:
+        ex = _ccxt.kraken({"enableRateLimit": True})
+        ticker = ex.fetch_ticker(f"{quote_currency}/EUR")
+        rate = float(ticker["last"] or 1.0)
+        _eur_rate_cache["data"][quote_currency] = rate
+        _eur_rate_cache["ts"] = now
+        return rate
+    except Exception:
+        return _eur_rate_cache["data"].get(quote_currency, 1.0)
 
 PID_DIR = os.environ.get("BOT_PID_DIR", os.path.join(PROJECT_ROOT, "run"))
 LOG_DIR = os.environ.get("BOT_LOG_DIR", os.path.join(PROJECT_ROOT, "logs"))
@@ -182,7 +207,8 @@ def _load_bot(db_path: str) -> dict:
 
         balance_quote_float = float(state.get("balance_quote", 0) or 0)
         balance_base_float  = float(state.get("balance_base",  0) or 0)
-        coin_value_eur      = balance_base_float * last_price
+        rate_to_eur         = _eur_rate(quote)                          # 1.0 für EUR
+        coin_value_eur      = balance_base_float * last_price * rate_to_eur
 
         # Aggregate P&L für Card-Übersicht
         total_pnl_eur           = 0.0
@@ -237,6 +263,7 @@ def _load_bot(db_path: str) -> dict:
             "sim_pnl":       sim_pnl,
             "fast_period":   fast_period,
             "slow_period":   slow_period,
+            "rate_to_eur":   rate_to_eur,
             "last_update":   state.get("last_update", ""),
             "ago":           _time_ago(state.get("last_update", "")),
             "dry_run":       state.get("dry_run") == "True",
@@ -269,11 +296,17 @@ def _load_bot(db_path: str) -> dict:
             "process_running": False,
             "regime": "–", "regime_adx": "–", "regime_atr_pct": "–", "regime_ago": "–",
             "strategy_name": "Standard", "sim_pnl": "–", "fast_period": "9", "slow_period": "21",
+            "rate_to_eur": 1.0,
         }
 
 
+_SKIP_DBS = {"candles.db", "news.db"}
+
 def load_all_bots() -> list[dict]:
-    paths = sorted(glob(os.path.join(DB_DIR, "*.db")))
+    paths = sorted(
+        p for p in glob(os.path.join(DB_DIR, "*.db"))
+        if os.path.basename(p) not in _SKIP_DBS
+    )
     return [_load_bot(p) for p in paths]
 
 
@@ -281,16 +314,24 @@ def load_all_bots() -> list[dict]:
 def index():
     bots = load_all_bots()
     active = [b for b in bots if not b.get("error")]
-    # EUR-Balance: aktuellster Bot (höchstes last_update)
-    sorted_active = sorted(active, key=lambda b: b.get("last_update", ""), reverse=True)
-    eur_balance = sorted_active[0]["balance_quote_float"] if sorted_active else 0.0
-    coin_total  = sum(b["coin_value_eur"] for b in active)
+
+    # Quote-Balance pro Currency in EUR umrechnen (Pool-bewusst)
+    # Jeweils nur den aktuellsten Bot pro Quote-Currency als Fiat-Quelle nehmen
+    seen_quotes: dict[str, float] = {}
+    for b in sorted(active, key=lambda b: b.get("last_update", ""), reverse=True):
+        q = b.get("quote", "EUR")
+        if q not in seen_quotes:
+            seen_quotes[q] = b["balance_quote_float"] * b.get("rate_to_eur", 1.0)
+
+    fiat_eur   = sum(seen_quotes.values())
+    coin_total = sum(b["coin_value_eur"] for b in active)
+
     return render_template(
         "index.html",
         bots=bots,
-        portfolio_eur=round(eur_balance, 2),
+        portfolio_eur=round(fiat_eur, 2),
         portfolio_coins=round(coin_total, 2),
-        portfolio_total=round(eur_balance + coin_total, 2),
+        portfolio_total=round(fiat_eur + coin_total, 2),
     )
 
 
