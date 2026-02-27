@@ -16,6 +16,13 @@ class NewsAgentConfig:
     sentiment_threshold: float = 0.5     # Ab |score| > threshold → Alert
     dedupe_hours: int = 24               # Kein doppelter Alert für gleiche URL
     max_articles_per_run: int = 50
+    # Altersfilter: Artikel älter als N Stunden werden ignoriert
+    max_age_hours: int = 48
+    # Semantische Dedup: gleiche Story von mehreren Outlets → nur eine Meldung
+    title_dedupe_hours: int = 4          # Vergleichsfenster
+    title_dedupe_threshold: float = 0.50 # Jaccard-Ähnlichkeit ab der = Duplikat
+    # Qualitätsfilter: Artikel mit zu kurzem Titel (Reddit-Posts, Placeholders etc.)
+    min_title_words: int = 5             # Mindestanzahl Wörter im Titel
 
     # Pfade
     db_path: str = "db/news.db"
@@ -64,9 +71,19 @@ class NewsAgentConfig:
 
     # RSS-Feed-URLs
     rss_feeds: list = field(default_factory=lambda: [
+        # Etablierte Medien
         "https://cointelegraph.com/rss",
         "https://decrypt.co/feed",
         "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        # Weitere kostenlose Quellen
+        "https://bitcoinmagazine.com/.rss/excerpt/",
+        "https://cryptoslate.com/feed/",
+        "https://blockworks.co/feed/",
+        "https://www.newsbtc.com/feed/",
+        "https://cryptonews.com/news/feed/",
+        # Reddit – Community-Sentiment (tägliche Top-Posts)
+        "https://www.reddit.com/r/CryptoCurrency/top.rss?t=day",
+        "https://www.reddit.com/r/Bitcoin/top.rss?t=day",
     ])
 
     # Google News RSS – Suchbegriffe
@@ -76,4 +93,9 @@ class NewsAgentConfig:
         "cryptocurrency hack",
         "ethereum",
         "trump crypto",
+        # Neu
+        "XRP ripple SEC",
+        "crypto ETF approval",
+        "DeFi exploit",
+        "bitcoin whale",
     ])

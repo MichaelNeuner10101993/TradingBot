@@ -211,6 +211,11 @@ def _load_bot(db_path: str) -> dict:
             except Exception:
                 pass
 
+        regime     = state.get("supervisor_regime", "–")
+        adx_val    = state.get("supervisor_adx", "–")
+        atr_pct    = state.get("supervisor_atr_pct", "–")
+        supv_update = state.get("supervisor_last_update", "")
+
         return {
             "symbol":        symbol,
             "base":          base,
@@ -220,6 +225,10 @@ def _load_bot(db_path: str) -> dict:
             "last_price_fmt": _price_fmt(last_price),
             "signal":        state.get("last_signal", "–"),
             "status":        state.get("status", "unknown"),
+            "regime":        regime,
+            "regime_adx":    adx_val,
+            "regime_atr_pct": atr_pct,
+            "regime_ago":    _time_ago(supv_update),
             "last_update":   state.get("last_update", ""),
             "ago":           _time_ago(state.get("last_update", "")),
             "dry_run":       state.get("dry_run") == "True",
@@ -250,6 +259,7 @@ def _load_bot(db_path: str) -> dict:
             "coin_value_eur": 0, "balance_quote_float": 0,
             "total_pnl_eur": 0, "total_expect_profit_eur": 0, "total_expect_loss_eur": 0,
             "process_running": False,
+            "regime": "–", "regime_adx": "–", "regime_atr_pct": "–", "regime_ago": "–",
         }
 
 

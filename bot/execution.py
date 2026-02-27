@@ -72,7 +72,7 @@ class Executor:
             log.warning(f"fetch_order fehlgeschlagen ({e}) – verwende Order-Response als Fallback")
             return {**fallback, "status": "closed", "filled": fallback.get("amount")}
 
-    def buy(self, amount: float, last_price: float) -> dict | None:
+    def buy(self, amount: float, last_price: float, candles: list | None = None) -> dict | None:
         amount = self._precision_amount(amount)
         if amount <= 0:
             log.warning("BUY abgebrochen: amount <= 0 nach Precision-Rounding")
@@ -111,7 +111,7 @@ class Executor:
             or (order.get("cost") / order.get("filled") if order.get("cost") and order.get("filled") else None)
             or last_price
         )
-        sl_price, tp_price = calc_levels(entry_price, self.risk_cfg)
+        sl_price, tp_price = calc_levels(entry_price, self.risk_cfg, candles)
         self.db.open_trade(
             client_id=client_id,
             symbol=self.cfg.symbol,

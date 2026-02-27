@@ -92,6 +92,10 @@
     .badge.open    { background:#1c2d3f; color:#58a6ff; }
     .badge.signal_close { background:#21262d; color:#8b949e; }
     .badge.err     { background:#3d1a1a; color:#f85149; }
+    .badge.trend   { background:#1c2d3f; color:#58a6ff; }
+    .badge.sideways{ background:#2d2208; color:#d29922; }
+    .badge.volatile{ background:#3d1a1a; color:#f85149; }
+    .badge.noregime{ background:#21262d; color:#484f58; }
 
     .pnl.pos { color: #3fb950; }
     .pnl.neg { color: #f85149; }
@@ -382,6 +386,19 @@
           {{ bot.open_trades|length }}
         </span>
       </div>
+      {% set _rsi = bot.state.get('rsi', '–') %}
+      <div class="row">
+        <span>RSI(14)</span>
+        <span data-role="rsi" style="color:{{ '#f85149' if _rsi not in ('–','') and _rsi|float > 65 else ('#3fb950' if _rsi not in ('–','') and _rsi|float < 35 else ('#8b949e' if _rsi not in ('–','') else '#484f58')) }}">{{ _rsi }}</span>
+      </div>
+      <div class="row">
+        <span>Regime</span>
+        {% set _r = bot.regime %}
+        <span data-role="regime"
+              class="badge {{ 'trend' if _r == 'TREND' else ('sideways' if _r == 'SIDEWAYS' else ('volatile' if _r == 'VOLATILE' else 'noregime')) }}">
+          {{ _r }}
+        </span>
+      </div>
       {% if bot.open_trades %}
       <div style="border-top:1px solid #21262d;margin-top:8px;padding-top:8px">
         <div class="row">
@@ -427,6 +444,18 @@
         SL {{ (bot.state.sl_pct|float * 100)|round(1) }}% &nbsp;
         TP {{ (bot.state.tp_pct|float * 100)|round(1) }}%
       </span>
+    {% endif %}
+    {% set _rsi = bot.state.get('rsi', '–') %}
+    {% if _rsi != '–' %}
+      <span style="font-size:11px;font-weight:bold;color:{{ '#f85149' if _rsi|float > 65 else ('#3fb950' if _rsi|float < 35 else '#8b949e') }}">RSI {{ _rsi }}</span>
+    {% endif %}
+    {% if bot.regime != '–' %}
+      <span class="badge {{ 'trend' if bot.regime == 'TREND' else ('sideways' if bot.regime == 'SIDEWAYS' else 'volatile') }}">
+        {{ bot.regime }}
+        {% if bot.regime_adx != '–' %}&nbsp;ADX {{ bot.regime_adx }}{% endif %}
+        &nbsp;ATR {{ bot.regime_atr_pct }}%
+      </span>
+      <span style="font-size:10px;color:#484f58">⟳ {{ bot.regime_ago }}</span>
     {% endif %}
     <span class="info">vor {{ bot.ago }}</span>
     {% if bot.process_running or bot.status == 'running' %}
@@ -818,6 +847,27 @@
         const count = (bot.open_trades || []).length;
         otEl.textContent = count;
         otEl.style.color = count > 0 ? '#58a6ff' : '#484f58';
+      }
+
+      // RSI
+      const rsiEl = card.querySelector('[data-role="rsi"]');
+      if (rsiEl && bot.state) {
+        const rv = bot.state.rsi || '–';
+        rsiEl.textContent = rv;
+        const rsiN = parseFloat(rv);
+        rsiEl.style.color = isNaN(rsiN) ? '#484f58' : rsiN > 65 ? '#f85149' : rsiN < 35 ? '#3fb950' : '#8b949e';
+      }
+
+      // Regime
+      const regimeEl = card.querySelector('[data-role="regime"]');
+      if (regimeEl) {
+        const r = (bot.regime || '–').toUpperCase();
+        regimeEl.textContent = r;
+        regimeEl.className = 'badge ' + (
+          r === 'TREND'    ? 'trend'    :
+          r === 'SIDEWAYS' ? 'sideways' :
+          r === 'VOLATILE' ? 'volatile' : 'noregime'
+        );
       }
 
       // Aktualisiert

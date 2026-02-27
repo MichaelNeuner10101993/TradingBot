@@ -1,0 +1,19 @@
+[Unit]
+Description=Trading Bot Supervisor – Regime-Erkennung
+After=network.target
+PartOf=tradingbot.target
+
+[Service]
+Type=simple
+User=DEIN_USER
+WorkingDirectory=DEIN_BOTDIR
+EnvironmentFile=DEIN_BOTDIR/.env
+ExecStart=DEIN_BOTDIR/botvenv/bin/python DEIN_BOTDIR/supervisor.py --interval 300
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=tradingbot.target

@@ -76,7 +76,9 @@ def main():
     log.info(
         f"Bot startet | symbol={bot_cfg.symbol} | tf={bot_cfg.timeframe} "
         f"| SMA {bot_cfg.fast_period}/{bot_cfg.slow_period} "
-        f"| SL={risk_cfg.stop_loss_pct*100:.1f}% TP={risk_cfg.take_profit_pct*100:.1f}% "
+        f"| RSI({risk_cfg.rsi_period}) buy<{risk_cfg.rsi_buy_max} sell>{risk_cfg.rsi_sell_min} "
+        f"| ATR({risk_cfg.atr_period}) SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult} "
+        f"| Fallback SL={risk_cfg.stop_loss_pct*100:.1f}% TP={risk_cfg.take_profit_pct*100:.1f}% "
         f"| dry_run={bot_cfg.dry_run} | db={ops_cfg.db_path}"
     )
 
@@ -97,15 +99,39 @@ def main():
                 balance     = feed.fetch_balance()
                 open_orders = feed.fetch_open_orders()
 
-                # 2) Signal berechnen
-                signal, last_price = get_signal(candles, bot_cfg.fast_period, bot_cfg.slow_period)
+                # 2) Supervisor-Anpassungen einlesen (falls Supervisor läuft)
+                _sv = db.get_all_state()
+                if _sv.get("supervisor_regime"):
+                    try:
+                        risk_cfg.rsi_buy_max  = float(_sv.get("supervisor_rsi_buy_max",  risk_cfg.rsi_buy_max))
+                        risk_cfg.rsi_sell_min = float(_sv.get("supervisor_rsi_sell_min", risk_cfg.rsi_sell_min))
+                        risk_cfg.atr_sl_mult  = float(_sv.get("supervisor_atr_sl_mult",  risk_cfg.atr_sl_mult))
+                        risk_cfg.atr_tp_mult  = float(_sv.get("supervisor_atr_tp_mult",  risk_cfg.atr_tp_mult))
+                        log.debug(
+                            f"Regime={_sv['supervisor_regime']} | "
+                            f"RSI<{risk_cfg.rsi_buy_max} RSI>{risk_cfg.rsi_sell_min} | "
+                            f"SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult}"
+                        )
+                    except (ValueError, TypeError) as e:
+                        log.warning(f"Supervisor-State ungültig: {e}")
+
+                # 3) Signal berechnen (inkl. RSI-Filter)
+                signal, last_price, rsi_val = get_signal(
+                    candles,
+                    bot_cfg.fast_period,
+                    bot_cfg.slow_period,
+                    risk_cfg.rsi_period,
+                    risk_cfg.rsi_buy_max,
+                    risk_cfg.rsi_sell_min,
+                )
+                rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
                 log.info(
-                    f"Signal={signal} | Preis={last_price:.4f} | "
+                    f"Signal={signal} | Preis={last_price:.4f} | RSI={rsi_str} | "
                     f"{balance['quote_currency']}={balance['quote']:.2f} "
                     f"{balance['base_currency']}={balance['base']:.6f}"
                 )
 
-                # 3) SL/TP prüfen (höchste Priorität)
+                # 4) SL/TP prüfen (höchste Priorität)
                 open_trades = db.get_open_trades(bot_cfg.symbol)
                 triggered   = sl_tp.check(last_price, open_trades)
                 for hit in triggered:
@@ -120,7 +146,7 @@ def main():
                 if triggered:
                     balance = feed.fetch_balance()
 
-                # 4) Guardrails
+                # 5) Guardrails
                 ok, reason = risk.check_guardrails(open_orders, balance)
                 active_trades = db.get_open_trades(bot_cfg.symbol)
                 if active_trades:
@@ -130,13 +156,13 @@ def main():
                 if not ok:
                     log.debug(f"Kein Trade: {reason}")
                 else:
-                    # 5) Order ausführen
+                    # 6) Order ausführen
                     if signal == "BUY":
-                        executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price)
+                        executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price, candles)
                     elif signal == "SELL":
                         executor.sell(risk.calc_sell_amount(balance), last_price)
 
-                # 6) Zustand für Web-Interface persistieren
+                # 7) Zustand für Web-Interface persistieren
                 db.set_state("symbol",         bot_cfg.symbol)
                 db.set_state("timeframe",      bot_cfg.timeframe)
                 db.set_state("dry_run",        str(bot_cfg.dry_run))
@@ -151,6 +177,8 @@ def main():
                 db.set_state("tp_pct",         str(risk_cfg.take_profit_pct))
                 db.set_state("fast_period",    str(bot_cfg.fast_period))
                 db.set_state("slow_period",    str(bot_cfg.slow_period))
+                db.set_state("rsi",            rsi_str)
+                db.set_state("regime",         _sv.get("supervisor_regime", "–"))
                 db.set_state("status",         "running")
 
                 breaker.success()
