@@ -188,6 +188,10 @@ else
     ok "Repository geklont (Branch: $REPO_BRANCH)"
 fi
 
+# Git: dubious-ownership Warnung unterdrücken (tritt auf wenn Verzeichnis
+# einem anderen User gehört als dem, der git ausführt – z.B. nach sudo-Clone)
+git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+
 # Ab jetzt ist das Verzeichnis garantiert vorhanden
 cd "$INSTALL_DIR"
 
