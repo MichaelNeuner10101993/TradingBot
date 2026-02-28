@@ -446,6 +446,9 @@ def api_delete_bot():
         symbol_safe = symbol.replace("/", "_")
 
         # 1. Prozess stoppen (best-effort, kein Fehler wenn nicht gefunden)
+        service  = f"tradingbot@{symbol_safe}.service"
+        subprocess.run(["sudo", "systemctl", "stop", service],
+                       capture_output=True, timeout=10)
         pid_file = os.path.join(PID_DIR, f"{symbol_safe}.pid")
         if os.path.exists(pid_file):
             try:
@@ -555,7 +558,21 @@ def api_stop_bot():
         killed      = False
         tried       = []
 
-        # Stufe 1: PID-Datei (start_bots.sh)
+        # Stufe 1: systemctl (für systemd-verwaltete Bots)
+        service = f"tradingbot@{symbol_safe}.service"
+        try:
+            r = subprocess.run(
+                ["sudo", "systemctl", "stop", service],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                killed = True
+            else:
+                tried.append(f"systemctl: {r.stderr.strip() or 'kein Service'}")
+        except Exception as e:
+            tried.append(f"systemctl: {e}")
+
+        # Stufe 2: PID-Datei (für via Web-UI gestartete Bots)
         if os.path.exists(pid_file):
             try:
                 with open(pid_file) as f:
@@ -567,7 +584,7 @@ def api_stop_bot():
                     pass
                 killed = True
             except ProcessLookupError:
-                # Stale PID – Datei löschen, weiter zu Stufe 2
+                # Stale PID – Datei löschen, weiter zu Stufe 3
                 try:
                     os.remove(pid_file)
                 except OSError:
@@ -576,7 +593,7 @@ def api_stop_bot():
             except Exception as e:
                 tried.append(f"PID-Datei: {e}")
 
-        # Stufe 2: pgrep nach Symbol in Kommandozeile
+        # Stufe 3: pgrep nach Symbol in Kommandozeile
         if not killed and shutil.which("pgrep"):
             try:
                 r = subprocess.run(
@@ -595,7 +612,7 @@ def api_stop_bot():
             except Exception as e:
                 tried.append(f"pgrep: {e}")
 
-        # Stufe 3: pkill nach Symbol
+        # Stufe 4: pkill nach Symbol
         if not killed and shutil.which("pkill"):
             try:
                 r = subprocess.run(

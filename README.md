@@ -258,10 +258,7 @@ Die `--startup-delay` Werte staffeln API-Calls beim gleichzeitigen Start:
 
 | Symbol | Delay |
 |--------|-------|
-| SNX/EUR | 0s |
 | BTC/EUR | 20s |
-| TRUMP/EUR | 40s |
-| PEPE/EUR | 60s |
 | XRP/EUR | 80s |
 | ETH/EUR | 100s |
 
@@ -320,14 +317,28 @@ botvenv/bin/python news_agent.py
 sudo systemctl start news-agent
 ```
 
-### Telegram-Buttons
+### Telegram-Befehle
+
+| Befehl | Beschreibung |
+|--------|--------------|
+| `/status` | Alle Bots: Status, Signal, Regime + Gesamt-Balance (Frei/Coins/Total) |
+| `/portfolio` | Offene Positionen: Entry, Jetzt-Preis, P&L EUR+%, SL/TP mit Abstand |
+| `/params BTC/EUR` | Parameter eines Bots: SMA, RSI, ATR, Regime, Fallback SL/TP |
+| `/start_bot BTC/EUR` | Bot starten |
+| `/stop_bot BTC/EUR` | Bot stoppen |
+| `/stop_all` | Alle laufenden Bots sofort stoppen |
+| `/buy BTC/EUR` | Force-BUY beim nächsten Loop (manueller Kauf) |
+| `/sell BTC/EUR` | Force-SELL beim nächsten Loop (Position schließen) |
+| `/set_sl BTC/EUR 2.0` | Stop-Loss auf 2% unter Entry-Preis setzen |
+| `/set_tp BTC/EUR 4.0` | Take-Profit auf 4% über Entry-Preis setzen |
+
+### Alert-Inline-Buttons
 
 | Button | Wann | Aktion |
 |--------|------|--------|
 | `🛑 BTC/EUR stoppen` | Bearish-Alert, Bot läuft | POST /api/bot/stop |
 | `▶ ETH/EUR starten` | Bullish-Alert, Bot gestoppt | POST /api/bot/start |
 | `✅ Ignorieren` | Immer | Alert als dismissed markieren (24h Cooldown) |
-| `/status` | Jederzeit | Zeigt alle Bot-Stati |
 
 ---
 
@@ -351,5 +362,6 @@ Nach VPN-Verbindung: `http://<pi-vpn-ip>:5001` im Browser.
 - Kraken API-Keys mit minimalen Rechten (kein Withdraw)
 - `.env` ist gitignored – niemals committen
 - **Circuit Breaker**: Bot stoppt nach 5 konsekutiven Fehlern automatisch
-- `NoNewPrivileges=true` in allen systemd-Services
+- `NoNewPrivileges=true` in Bot-Services (`tradingbot@.service`); im Web-Service entfernt (sonst blockiert polkit/sudo)
+- `/etc/sudoers.d/tradingbot`: User `xxx` darf `systemctl stop|start|restart tradingbot@*` ohne Passwort (für Dashboard-Steuerung)
 - Supervisor schreibt nur `supervisor_*`-Keys in Bot-DBs, greift nie in Orders ein

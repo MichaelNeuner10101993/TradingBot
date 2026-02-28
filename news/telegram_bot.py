@@ -6,8 +6,9 @@ Fremde User erhalten keine Antwort.
 
 Befehle:
   /start          – Begrüßung + Befehlsübersicht
-  /status         – Status aller Bots (Regime, Signal, P&L)
+  /status         – Status aller Bots (Regime, Signal, P&L, Balance)
   /bots           – Alias für /status
+  /portfolio      – Offene Positionen aller Bots (Entry, Preis, P&L, SL/TP)
   /start_bot XXX  – Bot für Symbol starten (z.B. /start_bot BTC/EUR)
   /stop_bot XXX   – Bot für Symbol stoppen
   /stop_all       – Alle laufenden Bots stoppen
@@ -89,6 +90,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("help",      self._cmd_help))
         self._app.add_handler(CommandHandler("status",    self._cmd_status))
         self._app.add_handler(CommandHandler("bots",      self._cmd_status))
+        self._app.add_handler(CommandHandler("portfolio", self._cmd_portfolio))
         self._app.add_handler(CommandHandler("start_bot", self._cmd_start_bot))
         self._app.add_handler(CommandHandler("stop_bot",  self._cmd_stop_bot))
         self._app.add_handler(CommandHandler("stop_all",  self._cmd_stop_all))
@@ -101,7 +103,39 @@ class TelegramNewsBot:
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
 
+        # Commands bei Telegram registrieren (erscheinen als Vorschläge wenn man / tippt)
+        self._register_commands()
+
         logger.info("Telegram-Bot initialisiert (nur Chat-ID %s autorisiert)", self.cfg.telegram_chat_id)
+
+    def _register_commands(self):
+        """Registriert Befehle bei Telegram (sichtbar als Vorschläge beim Tippen von /)."""
+        commands = [
+            ("start",     "Begrüßung"),
+            ("status",    "Status aller Bots inkl. Balance"),
+            ("portfolio", "Offene Positionen + P&L"),
+            ("params",    "Parameter eines Bots (z.B. /params BTC/EUR)"),
+            ("start_bot", "Bot starten (z.B. /start_bot BTC/EUR)"),
+            ("stop_bot",  "Bot stoppen (z.B. /stop_bot BTC/EUR)"),
+            ("stop_all",  "Alle Bots sofort stoppen"),
+            ("buy",       "Force-Kauf (z.B. /buy BTC/EUR)"),
+            ("sell",      "Force-Verkauf (z.B. /sell BTC/EUR)"),
+            ("set_sl",    "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
+            ("set_tp",    "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
+            ("help",      "Alle Befehle anzeigen"),
+        ]
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{self.cfg.telegram_bot_token}/setMyCommands",
+                json={"commands": [{"command": c, "description": d} for c, d in commands]},
+                timeout=10,
+            )
+            if resp.json().get("ok"):
+                logger.info("Telegram-Commands registriert (%d Befehle)", len(commands))
+            else:
+                logger.warning("setMyCommands fehlgeschlagen: %s", resp.text)
+        except Exception as e:
+            logger.warning("Fehler beim Registrieren der Commands: %s", e)
 
     # ------------------------------------------------------------------
     # Alert senden (fire-and-forget via asyncio.run)
@@ -308,7 +342,8 @@ class TelegramNewsBot:
         await update.message.reply_text(
             "📋 *Befehle:*\n\n"
             "📊 *Übersicht*\n"
-            "/status \\- Status aller Bots\n"
+            "/status \\- Status aller Bots \\(inkl\\. Balance\\)\n"
+            "/portfolio \\- Offene Positionen \\+ P&L\n"
             "/params BTC/EUR \\- Parameter anzeigen\n\n"
             "▶ *Bot\\-Verwaltung*\n"
             "/start\\_bot BTC/EUR \\- Bot starten\n"
@@ -334,7 +369,24 @@ class TelegramNewsBot:
                 await update.message.reply_text("ℹ️ Keine Bots konfiguriert\\.", parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            lines = ["📊 *Bot\\-Status:*\n"]
+            # Balance aggregieren (gleiche Logik wie web/app.py)
+            seen_quotes: dict = {}
+            coin_total = 0.0
+            for b in sorted(bots, key=lambda x: x.get("last_update", ""), reverse=True):
+                if b.get("error"):
+                    continue
+                q    = b.get("quote", "EUR")
+                rate = float(b.get("rate_to_eur", 1.0))
+                if q not in seen_quotes:
+                    seen_quotes[q] = float(b.get("balance_quote_float", 0)) * rate
+                coin_total += float(b.get("coin_value_eur", 0))
+            fiat_eur  = sum(seen_quotes.values())
+            total_eur = fiat_eur + coin_total
+
+            lines = [
+                "📊 *Bot\\-Status:*\n",
+                f"💰 Frei: `{fiat_eur:.2f} EUR` \\| Coins: `{coin_total:.2f} EUR` \\| Gesamt: `{total_eur:.2f} EUR`\n",
+            ]
             for bot in bots:
                 status  = bot.get("status", "unknown")
                 signal  = bot.get("signal", "–")
@@ -346,7 +398,7 @@ class TelegramNewsBot:
 
                 icon    = "🟢" if status == "running" else "🔴"
                 sig_ico = "📈" if signal == "BUY" else ("📉" if signal == "SELL" else "➡️")
-                sim_str = (f" \\| Sim: {_esc(sim_pnl)}%" if sim_pnl not in ("–", "") else "")
+                sim_str = (f" \\| Sim: {_esc(str(sim_pnl))}%" if sim_pnl not in ("–", "", None) else "")
 
                 lines.append(
                     f"{icon} *{_esc(bot.get('symbol', '?'))}*\n"
@@ -357,6 +409,68 @@ class TelegramNewsBot:
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler beim Abrufen: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def _cmd_portfolio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt offene Positionen aller Bots mit Entry, aktuellem Preis, P&L und SL/TP."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            bots = resp.json()
+
+            lines    = ["💼 *Offene Positionen:*\n"]
+            total_pnl = 0.0
+            no_pos   = []
+            has_any  = False
+
+            for bot in bots:
+                symbol     = bot.get("symbol", "?")
+                trades     = bot.get("open_trades", [])
+                last_price = float(bot.get("last_price", 0) or 0)
+                base       = bot.get("base", "")
+
+                if not trades:
+                    no_pos.append(symbol)
+                    continue
+
+                has_any = True
+                for t in trades:
+                    entry   = float(t.get("entry_price") or 0)
+                    sl      = float(t.get("sl_price") or 0)
+                    tp      = float(t.get("tp_price") or 0)
+                    amount  = float(t.get("amount") or 0)
+                    pnl_pct = float(t.get("pnl_pct") or 0)
+                    dist_sl = t.get("dist_to_sl_pct")
+                    dist_tp = t.get("dist_to_tp_pct")
+
+                    pnl_eur = (last_price - entry) * amount if (entry and amount and last_price) else 0.0
+                    total_pnl += pnl_eur
+
+                    pnl_sign = "+" if pnl_eur >= 0 else ""
+                    pct_sign = "+" if pnl_pct >= 0 else ""
+                    sl_dist  = f" \\(Abst: {dist_sl:.1f}%\\)" if dist_sl is not None else ""
+                    tp_dist  = f" \\(Abst: {dist_tp:.1f}%\\)" if dist_tp is not None else ""
+
+                    lines.append(
+                        f"📈 *{_esc(symbol)}* \\– {_esc(f'{amount:.6g}')} {_esc(base)}\n"
+                        f"  Entry: `{_fmt_p(entry)}` \\| Jetzt: `{_fmt_p(last_price)}`\n"
+                        f"  P&L: `{pnl_sign}{pnl_eur:.2f} EUR` \\(`{pct_sign}{pnl_pct:.2f}%`\\)\n"
+                        f"  SL: `{_fmt_p(sl)}`{sl_dist} \\| TP: `{_fmt_p(tp)}`{tp_dist}\n"
+                    )
+
+            if not has_any:
+                lines.append("ℹ️ Keine offenen Positionen\\.")
+
+            if no_pos:
+                lines.append(f"\n_Keine Position: {_esc(', '.join(no_pos))}_")
+
+            pnl_sign = "+" if total_pnl >= 0 else ""
+            lines.append(f"\n💰 *Gesamt P&L:* `{pnl_sign}{total_pnl:.2f} EUR`")
+
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
 
     async def _cmd_start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -670,6 +784,19 @@ def _call_force_signal(base_url: str, symbol: str, signal: str) -> dict:
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _fmt_p(price: float) -> str:
+    """Dynamische Dezimalstellen je nach Preishöhe (für Telegram-Ausgabe)."""
+    if price == 0:
+        return "0.00"
+    if price >= 1000:
+        return f"{price:,.2f}"
+    if price >= 1:
+        return f"{price:.4f}"
+    if price >= 0.01:
+        return f"{price:.6f}"
+    return f"{price:.8f}"
 
 
 def _call_set_sltp_pct(

@@ -446,7 +446,7 @@
 
 <!-- ── Per-Bot Detail Sections ──────────────────────────── -->
 {% for bot in bots %}
-<div class="bot-section" id="bot-{{ loop.index }}">
+<div class="bot-section" id="bot-{{ loop.index }}" data-symbol="{{ bot.symbol }}">
   <div class="bot-section-header" onclick="toggle(this)">
     <span class="chevron">▼</span>
     <span class="sym">{{ bot.symbol }}</span>
@@ -473,10 +473,12 @@
       <span style="font-size:10px;color:#484f58">⟳ {{ bot.regime_ago }}</span>
     {% endif %}
     <span class="info">vor {{ bot.ago }}</span>
-    {% if bot.process_running or bot.status == 'running' %}
-    <button class="stop-btn" onclick="stopBot(event, '{{ bot.symbol }}', this)">■ Stoppen</button>
-    {% else %}
-    <button class="start-btn"
+    {% set _running = bot.process_running or bot.status == 'running' %}
+    <button class="stop-btn" data-role="stop-btn"
+            style="{{ '' if _running else 'display:none' }}"
+            onclick="stopBot(event, '{{ bot.symbol }}', this)">■ Stoppen</button>
+    <button class="start-btn" data-role="start-btn"
+            style="{{ 'display:none' if _running else '' }}"
             data-cfg='{{ {
                 "symbol":    bot.symbol,
                 "timeframe": bot.state.get("timeframe", "5m"),
@@ -487,8 +489,9 @@
                 "dry_run":   bot.dry_run,
             } | tojson }}'
             onclick="restartBot(event, this)">▶ Starten</button>
-    <button class="delete-btn" onclick="openDeleteDialog(event, '{{ bot.symbol }}')">✕</button>
-    {% endif %}
+    <button class="delete-btn" data-role="delete-btn"
+            style="{{ 'display:none' if _running else '' }}"
+            onclick="openDeleteDialog(event, '{{ bot.symbol }}')">✕</button>
   </div>
 
   {% if not bot.get('error') %}
@@ -900,6 +903,19 @@
       // Aktualisiert
       const agoEl = card.querySelector('[data-role="ago"]');
       if (agoEl) agoEl.textContent = `vor ${bot.ago}`;
+
+      // Stop/Start-Buttons im Detail-Header aktualisieren
+      const section = document.querySelector(`.bot-section[data-symbol="${CSS.escape(bot.symbol)}"]`);
+      if (section) {
+        const isRunning = bot.process_running || (bot.status || '').includes('running');
+        const stopBtn  = section.querySelector('[data-role="stop-btn"]');
+        const startBtn = section.querySelector('[data-role="start-btn"]');
+        const delBtn   = section.querySelector('[data-role="delete-btn"]');
+        // Nicht überschreiben wenn Button gerade aktiv ist (Stop/Start läuft)
+        if (stopBtn  && !stopBtn.disabled)  stopBtn.style.display  = isRunning ? '' : 'none';
+        if (startBtn && !startBtn.disabled) startBtn.style.display = isRunning ? 'none' : '';
+        if (delBtn)                          delBtn.style.display   = isRunning ? 'none' : '';
+      }
     });
   }
 
@@ -1069,7 +1085,6 @@
   // ── Bot stoppen ───────────────────────────────────────────────────
   async function stopBot(event, symbol, btn) {
     event.stopPropagation(); // Section nicht ein-/ausklappen
-    if (!confirm(`${symbol} wirklich stoppen?`)) return;
 
     const orig = btn.textContent;
     btn.textContent = '…';

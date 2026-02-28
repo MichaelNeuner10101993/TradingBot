@@ -13,7 +13,5 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-NoNewPrivileges=true
-
 [Install]
 WantedBy=tradingbot.target

@@ -8,6 +8,7 @@ Verwendung (eine Instanz pro Coin):
 """
 import argparse
 import random
+import signal as _signal
 import time
 import ccxt
 
@@ -41,6 +42,11 @@ def parse_args():
 
 
 def main():
+    # SIGTERM (von systemctl stop) → KeyboardInterrupt → finally-Block setzt status="stopped"
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
+
     args = parse_args()
 
     # --- Konfiguration (CLI überschreibt Defaults) ---
