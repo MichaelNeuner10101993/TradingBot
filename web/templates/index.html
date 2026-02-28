@@ -152,6 +152,79 @@
       text-align: center;
     }
 
+    /* ── Update-Button ──────────────────────────────────── */
+    .update-btn {
+      background: transparent;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #8b949e;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 4px 10px;
+      white-space: nowrap;
+      transition: border-color .15s, color .15s;
+    }
+    .update-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+    .update-btn.has-updates { border-color: #d29922; color: #d29922; }
+    .update-btn.up-to-date  { border-color: #3fb950; color: #3fb950; }
+
+    #update-panel {
+      display: none;
+      margin-top: 8px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 11px;
+      max-width: 480px;
+    }
+    #update-panel ul { margin: 6px 0 6px 14px; }
+    #update-panel li { color: #c9d1d9; margin-bottom: 2px; word-break: break-all; }
+    #update-panel code { color: #58a6ff; }
+
+    /* ── Mobile ─────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      body { padding: 10px; font-size: 12px; }
+
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      header .meta { text-align: left; }
+      #port-detail { display: block; color: #8b949e; margin-top: 2px; }
+
+      .overview { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
+      .bot-card { padding: 10px; }
+      .bot-card .sig { font-size: 18px; }
+
+      .bot-section-header { flex-wrap: wrap; padding: 10px 12px; }
+      .bot-section-header .info { width: 100%; margin-left: 0; margin-top: 2px; }
+      .bot-section-body { padding: 10px 12px; overflow-x: auto; }
+
+      table { min-width: 480px; font-size: 11px; }
+      th, td { padding: 4px 6px; }
+
+      .stop-btn, .start-btn, .delete-btn {
+        padding: 6px 12px;
+        font-size: 12px;
+        min-width: 72px;
+      }
+      .sltp-adj { padding: 3px 8px 4px; font-size: 16px; }
+      .sltp-input { width: 80px; }
+
+      dialog { padding: 14px; max-height: 90vh; overflow-y: auto; }
+      .form-row { grid-template-columns: 1fr; gap: 8px; }
+
+      .add-bot-btn { padding: 12px; font-size: 12px; }
+    }
+
+    @media (max-width: 380px) {
+      .overview { grid-template-columns: 1fr; }
+    }
+
     /* ── SL/TP Inline-Inputs ────────────────────────────── */
     .sltp-ctrl {
       display: inline-flex;
@@ -362,10 +435,14 @@
       <span id="port-detail" style="color:#484f58">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
     </div>
   </div>
-  <div class="meta">
-    Auto-Refresh in <span id="cd">60</span>s
+  <div class="meta" style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="update-btn" class="update-btn" onclick="checkUpdates()">⟳ Updates</button>
+      <span style="font-size:11px;color:#8b949e">Refresh in <span id="cd">60</span>s</span>
+    </div>
   </div>
 </header>
+<div id="update-panel"></div>
 
 {% if not bots %}
   <div class="empty" style="padding:40px;text-align:center">
@@ -892,6 +969,47 @@
   // Collapse/Expand
   function toggle(header) {
     header.closest('.bot-section').classList.toggle('collapsed');
+  }
+
+  // ── Update-Check ───────────────────────────────────────────────────────
+  async function checkUpdates() {
+    const btn   = document.getElementById('update-btn');
+    const panel = document.getElementById('update-panel');
+    btn.textContent = '⟳ …';
+    btn.disabled = true;
+    panel.style.display = 'none';
+    try {
+      const r = await fetch('/api/check_updates');
+      const d = await r.json();
+      if (!d.ok) {
+        btn.textContent = '⟳ Updates';
+        btn.className = 'update-btn';
+        panel.innerHTML = `<span style="color:#f85149">⚠ Fehler: ${d.error}</span>`;
+      } else if (d.up_to_date) {
+        btn.textContent = '✓ Aktuell';
+        btn.className = 'update-btn up-to-date';
+        panel.innerHTML = `<span style="color:#3fb950">✓ Lokaler Stand ist aktuell.</span>`
+          + ` <span style="color:#8b949e">Commit: <code>${d.current}</code></span>`;
+      } else {
+        btn.textContent = `⬆ ${d.behind_by} neu`;
+        btn.className = 'update-btn has-updates';
+        const items = d.commits.map(c => {
+          const [hash, ...rest] = c.split(' ');
+          return `<li><code style="color:#58a6ff">${hash}</code> ${rest.join(' ')}</li>`;
+        }).join('');
+        panel.innerHTML =
+          `<b style="color:#d29922">⬆ ${d.behind_by} neuer Commit${d.behind_by !== 1 ? 's' : ''} auf main:</b>`
+          + `<ul>${items}</ul>`
+          + `<div style="margin-top:6px;color:#8b949e">Aktuell: <code>${d.current}</code>`
+          + ` &nbsp;·&nbsp; Update: <code>git pull origin main</code></div>`;
+      }
+    } catch(e) {
+      btn.textContent = '⟳ Updates';
+      btn.className = 'update-btn';
+      panel.innerHTML = `<span style="color:#f85149">⚠ Netzwerkfehler</span>`;
+    }
+    btn.disabled = false;
+    panel.style.display = 'block';
   }
 
   // ── Live Card Updates alle 5s ──────────────────────────────────────

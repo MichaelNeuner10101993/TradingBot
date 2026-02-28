@@ -17,7 +17,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 from bot.persistence import StateDB
 
-DB_DIR = os.environ.get("BOT_DB_DIR", os.path.join(PROJECT_ROOT, "db"))
+DB_DIR       = os.environ.get("BOT_DB_DIR",      os.path.join(PROJECT_ROOT, "db"))
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", 5001))
 
 KRAKEN_FEE = 0.0026  # Taker-Fee pro Order (0.26%); Round-Trip = 2 × 0.26% = 0.52%
 
@@ -721,5 +722,43 @@ def api_stop_bot():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/check_updates")
+def check_updates():
+    """Prüft ob auf dem main-Branch neuere Commits vorliegen."""
+    try:
+        fetch = subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            capture_output=True, timeout=20, cwd=PROJECT_ROOT,
+        )
+        if fetch.returncode != 0:
+            err = fetch.stderr.decode(errors="replace")[:300]
+            return jsonify({"ok": False, "error": f"git fetch fehlgeschlagen: {err}"})
+
+        log = subprocess.run(
+            ["git", "log", "HEAD..origin/main", "--oneline", "--no-decorate"],
+            capture_output=True, text=True, timeout=10, cwd=PROJECT_ROOT,
+        )
+        commits = [c.strip() for c in log.stdout.strip().splitlines() if c.strip()]
+
+        current = subprocess.run(
+            ["git", "log", "-1", "--format=%h %s", "HEAD"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        ).stdout.strip()
+
+        return jsonify({
+            "ok":         True,
+            "up_to_date": len(commits) == 0,
+            "behind_by":  len(commits),
+            "commits":    commits[:15],
+            "current":    current,
+        })
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": "git nicht gefunden"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "Timeout – kein Internetzugang?"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)

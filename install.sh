@@ -192,6 +192,23 @@ fi
 cd "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
+# Schritt 4a: Dashboard-Port
+# ---------------------------------------------------------------------------
+step "Dashboard-Port"
+
+echo "  Port auf dem das Web-Dashboard läuft."
+echo "  Standard: 5001. Wähle einen anderen Port wenn 5001 bereits belegt ist."
+echo ""
+ask WEB_PORT "Dashboard-Port" "5001"
+
+# Valide Portnummer?
+if ! [[ "$WEB_PORT" =~ ^[0-9]+$ ]] || (( WEB_PORT < 1024 || WEB_PORT > 65535 )); then
+    warn "Ungültiger Port '$WEB_PORT' – verwende 5001."
+    WEB_PORT=5001
+fi
+ok "Dashboard-Port: $WEB_PORT"
+
+# ---------------------------------------------------------------------------
 # Schritt 4: Credentials abfragen
 # ---------------------------------------------------------------------------
 step "API-Konfiguration"
@@ -235,6 +252,9 @@ KRAKEN_API_SECRET=${KRAKEN_API_SECRET}
 # News-Agent – Telegram
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+
+# Dashboard-Port
+DASHBOARD_PORT=${WEB_PORT}
 
 # News-Agent – CryptoPanic (optional, kostenloser Key)
 CRYPTOPANIC_API_KEY=${CRYPTOPANIC_API_KEY:-}
@@ -379,6 +399,108 @@ else
     info "  sudo systemctl start tradingbot.target"
 fi
 
+
+# ---------------------------------------------------------------------------
+# Schritt 13: WireGuard VPN (optional)
+# ---------------------------------------------------------------------------
+step "WireGuard VPN (optional)"
+
+echo "  Ermöglicht sicheren Zugriff auf das Dashboard von außen."
+echo "  → Nur der Pi ist über VPN erreichbar (Split-Tunnel, kein Full-VPN)."
+echo ""
+
+WG_CLIENT_CONF=""
+
+if confirm "WireGuard VPN einrichten?"; then
+
+    info "Installiere wireguard und qrencode ..."
+    sudo apt-get install -y wireguard qrencode 2>/dev/null
+    ok "Pakete installiert"
+
+    echo ""
+    echo "  Öffentliche IP oder DynDNS-Hostname des Pi:"
+    echo "  (wird im Client-Config als Endpoint gesetzt)"
+    echo ""
+    ask WG_HOST "Öffentliche IP / Hostname"
+
+    WG_PORT=51820
+    read -rp "  WireGuard-Port [51820]: " _wgport
+    WG_PORT="${_wgport:-51820}"
+
+    VPN_NET="10.244.199"
+    SERVER_VPN_IP="${VPN_NET}.1"
+    CLIENT_VPN_IP="${VPN_NET}.2"
+
+    # Schlüssel generieren
+    SERVER_PRIV=$(wg genkey)
+    SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
+    CLIENT_PRIV=$(wg genkey)
+    CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
+
+    # Server-Config
+    sudo mkdir -p /etc/wireguard
+    sudo bash -c "cat > /etc/wireguard/wg0.conf" << WGEOF
+[Interface]
+Address    = ${SERVER_VPN_IP}/24
+ListenPort = ${WG_PORT}
+PrivateKey = ${SERVER_PRIV}
+
+[Peer]
+# Client 1
+PublicKey  = ${CLIENT_PUB}
+AllowedIPs = ${CLIENT_VPN_IP}/32
+WGEOF
+    sudo chmod 600 /etc/wireguard/wg0.conf
+    ok "Server-Config: /etc/wireguard/wg0.conf"
+
+    # IP-Forwarding aktivieren (dauerhaft)
+    if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
+        echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf > /dev/null
+    fi
+    sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
+    ok "IP-Forwarding aktiviert"
+
+    # Firewall-Port freigeben (UFW falls aktiv)
+    if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        sudo ufw allow "${WG_PORT}/udp" > /dev/null
+        ok "UFW: Port ${WG_PORT}/udp freigegeben"
+    fi
+
+    # WireGuard-Service starten
+    sudo systemctl enable --now wg-quick@wg0
+    ok "wg-quick@wg0 gestartet"
+
+    # Client-Config schreiben (Split-Tunnel: nur Pi erreichbar)
+    WG_DIR="$HOME/wireguard-clients"
+    mkdir -p "$WG_DIR"
+    WG_CLIENT_CONF="$WG_DIR/client1.conf"
+
+    cat > "$WG_CLIENT_CONF" << CLIENTEOF
+[Interface]
+PrivateKey = ${CLIENT_PRIV}
+Address    = ${CLIENT_VPN_IP}/32
+
+[Peer]
+PublicKey           = ${SERVER_PUB}
+Endpoint            = ${WG_HOST}:${WG_PORT}
+AllowedIPs          = ${SERVER_VPN_IP}/32
+PersistentKeepalive = 25
+CLIENTEOF
+    chmod 600 "$WG_CLIENT_CONF"
+    ok "Client-Config: $WG_CLIENT_CONF"
+
+    echo ""
+    echo -e "  ${BOLD}QR-Code (für WireGuard-App auf Handy):${NC}"
+    qrencode -t ansiutf8 < "$WG_CLIENT_CONF"
+    echo ""
+    warn "WICHTIG: Port ${WG_PORT}/UDP im Router als Port-Forwarding zum Pi einrichten!"
+    info "Dashboard über VPN: http://${SERVER_VPN_IP}:${WEB_PORT}"
+    info "Client-Config gespeichert: $WG_CLIENT_CONF"
+
+else
+    info "WireGuard übersprungen."
+fi
+
 # ---------------------------------------------------------------------------
 # Fertig
 # ---------------------------------------------------------------------------
@@ -393,7 +515,8 @@ echo "  Python venv:              $VENV_DIR"
 echo "  .env:                     $ENV_FILE"
 echo ""
 echo -e "  ${BOLD}Web-Dashboard${NC}"
-echo "    http://$(hostname -I | awk '{print $1}'):5001"
+echo "    Lokal:  http://$(hostname -I | awk '{print $1}'):${WEB_PORT}"
+[[ -n "$WG_CLIENT_CONF" ]] && echo "    VPN:    http://10.244.199.1:${WEB_PORT}"
 echo ""
 echo -e "  ${BOLD}Wichtige Befehle${NC}"
 echo "    Status:          sudo systemctl status 'tradingbot@*'"

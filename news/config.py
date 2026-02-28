@@ -33,8 +33,10 @@ class NewsAgentConfig:
     log_dir: str = "logs"
     log_level: str = "INFO"
 
-    # Web-API des Trading-Bots (für start/stop)
-    web_api_base: str = "http://localhost:5001"
+    # Web-API des Trading-Bots (für start/stop) – Port aus Env oder Default 5001
+    web_api_base: str = field(
+        default_factory=lambda: f"http://localhost:{os.getenv('DASHBOARD_PORT', '5001')}"
+    )
 
     # Telegram
     telegram_bot_token: str = field(
