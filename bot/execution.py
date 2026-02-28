@@ -9,6 +9,7 @@ from bot.config import BotConfig, RiskConfig
 from bot.persistence import StateDB
 from bot.ops import retry_backoff
 from bot.sl_tp import calc_levels
+from bot import notify
 
 log = logging.getLogger("tradingbot.execution")
 
@@ -120,6 +121,40 @@ class Executor:
             sl_price=sl_price,
             tp_price=tp_price,
         )
+        notify.send_trade_buy(self.cfg.symbol, amount, entry_price, sl_price, tp_price, self.cfg.dry_run)
+        return order
+
+    def pyramid_buy(self, amount: float, last_price: float) -> dict | None:
+        """
+        Führt einen Pyramid-Nachkauf durch, ohne einen neuen Trade in der DB zu eröffnen.
+        Gibt die Order zurück (inkl. tatsächlichem Kaufpreis in 'average'), oder None bei Fehler.
+        """
+        amount = self._precision_amount(amount)
+        if amount <= 0:
+            log.warning("PYRAMID-BUY abgebrochen: amount <= 0 nach Precision-Rounding")
+            return None
+
+        ok, reason = self._meets_exchange_minimum(amount, last_price)
+        if not ok:
+            log.warning(f"PYRAMID-BUY abgebrochen: {reason}")
+            return None
+
+        client_id = _make_client_id()
+        base = self.cfg.symbol.split("/")[0]
+
+        if self.cfg.dry_run:
+            log.info(f"[DRY] PYRAMID-BUY {amount} {base} @ ~{last_price:.4f} (client_id={client_id})")
+            order = {"id": client_id, "symbol": self.cfg.symbol, "side": "buy",
+                     "amount": amount, "price": last_price, "average": last_price, "status": "dry_run"}
+        else:
+            log.info(f"PYRAMID-BUY {amount} {base} @ ~{last_price:.4f} (client_id={client_id})")
+            order = self._submit_order("buy", amount)
+            order = self._fetch_order_status(order["id"], fallback=order)
+            log.info(f"PYRAMID-BUY Order-Status: {order.get('status')} | filled={order.get('filled')}")
+            if not order.get("average") and not order.get("price"):
+                order = {**order, "average": last_price}
+
+        self.db.upsert_order(client_id, order)
         return order
 
     def sell(self, amount: float, last_price: float, trade_client_id: str | None = None, reason: str = "signal_close") -> dict | None:

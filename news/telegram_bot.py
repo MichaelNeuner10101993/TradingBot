@@ -100,6 +100,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("set_tp",    self._cmd_set_tp))
         self._app.add_handler(CommandHandler("params",    self._cmd_params))
         self._app.add_handler(CommandHandler("holdings",  self._cmd_holdings))
+        self._app.add_handler(CommandHandler("rendite",   self._cmd_rendite))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -127,6 +128,7 @@ class TelegramNewsBot:
             ("set_sl",    "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
             ("set_tp",    "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
             ("holdings",  "Alle gehaltenen Coins auf Kraken"),
+            ("rendite",   "Detaillierte Rentabilität aller Bots"),
             ("help",      "Alle Befehle anzeigen"),
         ]
         try:
@@ -349,6 +351,7 @@ class TelegramNewsBot:
             "📊 *Übersicht*\n"
             "/status \\- Status aller Bots \\(inkl\\. Balance\\)\n"
             "/portfolio \\- Offene Positionen \\+ P&L\n"
+            "/rendite \\- Detaillierte Rentabilität \\(Win\\-Rate, P&L, Trades\\)\n"
             "/holdings \\- Alle gehaltenen Coins auf Kraken\n"
             "/params BTC/EUR \\- Parameter anzeigen\n\n"
             "▶ *Bot\\-Verwaltung*\n"
@@ -463,11 +466,11 @@ class TelegramNewsBot:
 
                     pnl_sign = "+" if pnl_eur >= 0 else ""
                     pct_sign = "+" if pnl_pct >= 0 else ""
-                    sl_dist  = f" \\(Abst: {dist_sl:.1f}%\\)" if dist_sl is not None else ""
-                    tp_dist  = f" \\(Abst: {dist_tp:.1f}%\\)" if dist_tp is not None else ""
+                    sl_dist  = f" \\(Abst: {_esc(f'{dist_sl:.1f}')}%\\)" if dist_sl is not None else ""
+                    tp_dist  = f" \\(Abst: {_esc(f'{dist_tp:.1f}')}%\\)" if dist_tp is not None else ""
 
                     lines.append(
-                        f"📈 *{_esc(symbol)}* \\– {_esc(f'{amount:.6g}')} {_esc(base)}\n"
+                        f"📈 *{_esc(symbol)}* – {_esc(f'{amount:.6g}')} {_esc(base)}\n"
                         f"  Entry: `{_fmt_p(entry)}` \\| Jetzt: `{_fmt_p(last_price)}`\n"
                         f"  P&L: `{pnl_sign}{pnl_eur:.2f} EUR` \\(`{pct_sign}{pnl_pct:.2f}%`\\)\n"
                         f"  SL: `{_fmt_p(sl)}`{sl_dist} \\| TP: `{_fmt_p(tp)}`{tp_dist}\n"
@@ -484,7 +487,90 @@ class TelegramNewsBot:
 
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
+            logger.exception("_cmd_portfolio Fehler")
             await update.message.reply_text(f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def _cmd_rendite(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt detaillierte Rentabilitäts-Auswertung aller Bots (P&L, Win-Rate, Trades)."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            bots = resp.json()
+
+            lines = ["📊 <b>Rentabilität – Detailauswertung</b>\n"]
+
+            for bot in bots:
+                symbol      = bot.get("symbol", "?")
+                status      = bot.get("status", "?")
+                regime      = bot.get("regime") or "–"
+                strategy    = bot.get("strategy_name") or "Standard"
+                fast        = bot.get("fast_period", "9")
+                slow        = bot.get("slow_period", "21")
+                last_price  = float(bot.get("last_price") or 0)
+                open_trades = bot.get("open_trades", [])
+                closed      = bot.get("closed_trades", [])
+                sim_pnl     = bot.get("sim_pnl") or "–"
+
+                icon = "🟢" if status == "running" else "🔴"
+                lines.append(f"{icon} <b>{symbol}</b>  <i>{regime} | {strategy} {fast}/{slow}</i>")
+
+                # Offene Position
+                if open_trades:
+                    t        = open_trades[0]
+                    entry    = float(t.get("entry_price") or 0)
+                    amount   = float(t.get("amount") or 0)
+                    pnl_pct  = float(t.get("pnl_pct") or 0)
+                    pnl_eur  = (last_price - entry) * amount if (entry and amount and last_price) else 0.0
+                    dist_sl  = t.get("dist_to_sl_pct")
+                    dist_tp  = t.get("dist_to_tp_pct")
+                    p_sign   = "+" if pnl_eur >= 0 else ""
+                    pct_sign = "+" if pnl_pct >= 0 else ""
+                    pyr      = int(t.get("pyramid_count") or 0)
+                    pyr_str  = f" 🔺×{pyr}" if pyr else ""
+                    sl_str   = f" ({dist_sl:.1f}% Abst)" if dist_sl is not None else ""
+                    tp_str   = f" ({dist_tp:.1f}% Abst)" if dist_tp is not None else ""
+                    lines.append(
+                        f"  📌 Position{pyr_str}: {amount:.6g} @ {_fmt_p(entry)}\n"
+                        f"  Jetzt: {_fmt_p(last_price)} | P&L: <b>{p_sign}{pnl_eur:.2f} EUR</b> ({pct_sign}{pnl_pct:.2f}%)\n"
+                        f"  SL: {_fmt_p(float(t.get('sl_price') or 0))}{sl_str} | TP: {_fmt_p(float(t.get('tp_price') or 0))}{tp_str}"
+                    )
+                else:
+                    lines.append("  ⏸ Keine offene Position")
+
+                # Geschlossene Trades auswerten
+                valid = [t for t in closed if t.get("pnl_pct") is not None]
+                if valid:
+                    wins     = [t for t in valid if (t.get("pnl_pct") or 0) > 0]
+                    total_eur = sum(
+                        ((t.get("tp_price") if t["status"] == "tp_hit" else t.get("sl_price")) or t["entry_price"])
+                        * float(t.get("amount") or 0)
+                        - float(t.get("entry_price") or 0) * float(t.get("amount") or 0)
+                        for t in valid
+                    )
+                    win_rate = len(wins) / len(valid) * 100
+                    sign     = "+" if total_eur >= 0 else ""
+                    best_t   = max(valid, key=lambda x: x.get("pnl_pct") or 0)
+                    worst_t  = min(valid, key=lambda x: x.get("pnl_pct") or 0)
+                    lines.append(
+                        f"  📈 {len(valid)} Trades | Win-Rate: {win_rate:.0f}% | "
+                        f"Gesamt: <b>{sign}{total_eur:.2f} EUR</b>\n"
+                        f"  Bester: {best_t.get('pnl_pct', 0):+.2f}% ({best_t.get('status','?')}) | "
+                        f"Schlechtester: {worst_t.get('pnl_pct', 0):+.2f}%"
+                    )
+                else:
+                    lines.append("  📈 Noch keine abgeschlossenen Trades")
+
+                if sim_pnl and sim_pnl != "–":
+                    lines.append(f"  🔬 Sim-P&L (Backtest): {sim_pnl}%")
+
+                lines.append("")  # Leerzeile zwischen Bots
+
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.exception("_cmd_rendite Fehler")
+            await update.message.reply_text(f"❌ Fehler: {e}")
 
     async def _cmd_holdings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Zeigt alle aktuell auf Kraken gehaltenen Coins mit Preis und EUR-Wert."""
@@ -539,6 +625,11 @@ class TelegramNewsBot:
         # portfolio / positionen
         if re.search(r'\bportfolio\b|\bpositionen?\b|\bposition\b', text):
             await self._cmd_portfolio(update, context)
+            return
+
+        # rendite / rentabilität / performance
+        if re.search(r'\brendite\b|\brentabilit\b|\bperformance\b|\bstats?\b|\bauswertung\b', text):
+            await self._cmd_rendite(update, context)
             return
 
         # holdings / bestände / was halte ich

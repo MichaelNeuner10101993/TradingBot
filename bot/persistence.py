@@ -75,6 +75,13 @@ class StateDB:
         """)
         self.conn.commit()
 
+        # Migration: pyramid_count zu trades (bestehende DBs)
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN pyramid_count INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
+
     # --- Orders ---
 
     def upsert_order(self, client_id: str, data: dict):
@@ -174,6 +181,28 @@ class StateDB:
         )
         self.conn.commit()
         log.info(f"Trade geschlossen: client_id={client_id} reason={reason}")
+
+    def update_trade_pyramid(
+        self,
+        client_id: str,
+        new_amount: float,
+        new_entry: float,
+        new_sl: float,
+        new_tp: float,
+    ):
+        """Aktualisiert Trade nach Pyramid-Kauf (Menge, Avg-Entry, SL/TP, Zähler)."""
+        self.conn.execute(
+            """UPDATE trades
+               SET amount = ?, entry_price = ?, sl_price = ?, tp_price = ?,
+                   pyramid_count = pyramid_count + 1
+               WHERE client_id = ? AND status = 'open'""",
+            (new_amount, new_entry, new_sl, new_tp, client_id),
+        )
+        self.conn.commit()
+        log.info(
+            f"Pyramid-Trade aktualisiert: {client_id[:12]}… "
+            f"amount={new_amount:.6f} entry={new_entry:.4f} SL={new_sl:.4f} TP={new_tp:.4f}"
+        )
 
     def update_trade_sltp(self, client_id: str, sl_price: float, tp_price: float):
         """Aktualisiert SL/TP eines offenen Trades (manuell über Dashboard)."""

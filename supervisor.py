@@ -116,13 +116,84 @@ def _write(
         log.error(f"DB-Schreibfehler ({db_path}): {e}")
 
 
+def _cross_bot_learning(results: dict, dry_run: bool):
+    """
+    Cross-Bot Learning: Teilt die beste Strategie eines Coins mit anderen Coins
+    im gleichen Regime, wenn die geteilte Strategie auf den Ziel-Candles besser abschneidet.
+
+    results: {symbol -> {"regime", "best", "candles", "db_path"}}
+    """
+    from collections import defaultdict
+    log = logging.getLogger("supervisor")
+
+    by_regime: dict[str, list] = defaultdict(list)
+    for symbol, data in results.items():
+        by_regime[data["regime"]].append((symbol, data))
+
+    for regime, bots in by_regime.items():
+        if len(bots) < 2:
+            continue
+
+        # Winner = Coin mit höchstem sim_pnl (nur wenn positiv)
+        winner_sym, winner_data = max(bots, key=lambda x: x[1]["best"]["pnl_pct"])
+        if winner_data["best"]["pnl_pct"] <= 0:
+            log.debug(f"Cross-Bot [{regime}]: kein positiver Winner – übersprungen")
+            continue
+
+        tmpl = REGIME_TEMPLATES[regime]
+
+        for sym, data in bots:
+            if sym == winner_sym:
+                continue
+
+            # Winner-Strategie auf Ziel-Candles testen
+            shared = optimizer.simulate(
+                data["candles"],
+                winner_data["best"]["fast"],
+                winner_data["best"]["slow"],
+                rsi_buy_max=tmpl["rsi_buy_max"],
+                rsi_sell_min=tmpl["rsi_sell_min"],
+                atr_sl_mult=tmpl["atr_sl_mult"],
+                atr_tp_mult=tmpl["atr_tp_mult"],
+            )
+            if shared is None:
+                continue
+
+            own_pnl    = data["best"]["pnl_pct"]
+            shared_pnl = shared["pnl_pct"]
+
+            if shared_pnl > own_pnl:
+                shared_name = f"{winner_data['best']['name']}→{winner_sym.split('/')[0]}"
+                log.info(
+                    f"CROSS-BOT: {sym} übernimmt '{winner_data['best']['name']}' "
+                    f"von {winner_sym} (f={winner_data['best']['fast']}/s={winner_data['best']['slow']}) | "
+                    f"P&L: {own_pnl:+.2f}% → {shared_pnl:+.2f}%"
+                )
+                if not dry_run:
+                    try:
+                        db = StateDB(data["db_path"])
+                        db.set_state("supervisor_fast",          str(winner_data["best"]["fast"]))
+                        db.set_state("supervisor_slow",          str(winner_data["best"]["slow"]))
+                        db.set_state("supervisor_strategy_name", shared_name)
+                        db.set_state("supervisor_sim_pnl",       f"{shared_pnl:+.2f}")
+                        db.set_state("supervisor_sim_trades",    str(shared["num_trades"]))
+                        db.close()
+                    except Exception as e:
+                        log.error(f"Cross-Bot DB-Schreibfehler ({data['db_path']}): {e}")
+            else:
+                log.debug(
+                    f"Cross-Bot: {sym} behält eigene Strategie "
+                    f"({own_pnl:+.2f}% ≥ {shared_pnl:+.2f}% von {winner_sym})"
+                )
+
+
 def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, dry_run: bool):
     """Einen Supervisor-Durchlauf über alle Bot-DBs."""
     log = logging.getLogger("supervisor")
     db_paths = sorted(glob(os.path.join(db_dir, "*.db")))
 
-    # candles.db aus der Liste heraushalten
-    db_paths = [p for p in db_paths if os.path.basename(p) != "candles.db"]
+    # candles.db + news.db aus der Liste heraushalten
+    db_paths = [p for p in db_paths if os.path.basename(p) not in ("candles.db", "news.db")]
 
     if not db_paths:
         log.info("Keine Bot-DBs gefunden.")
@@ -133,6 +204,9 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
     # Candle-Cache einmal öffnen (geteilt über alle Symbole)
     candles_db_path = os.path.join(db_dir, "candles.db")
     conn_c = cdb.open_db(candles_db_path)
+
+    # Ergebnisse für Cross-Bot Learning sammeln
+    results: dict = {}
 
     try:
         for db_path in db_paths:
@@ -182,7 +256,20 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
 
             _write(db_path, regime, adx_val, atr_pct, best, dry_run)
 
+            # Ergebnis für Cross-Bot Learning merken
+            results[symbol] = {
+                "regime":   regime,
+                "best":     best,
+                "candles":  history,
+                "db_path":  db_path,
+            }
+
             time.sleep(1.5)   # Kraken Rate-Limit schonen
+
+        # Cross-Bot Learning: beste Strategie zwischen Coins teilen
+        if len(results) >= 2:
+            _cross_bot_learning(results, dry_run)
+
     finally:
         conn_c.close()
 

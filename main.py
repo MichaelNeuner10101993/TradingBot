@@ -21,7 +21,8 @@ from bot.strategy import get_signal
 from bot.risk import RiskManager
 from bot.execution import Executor
 from bot.persistence import StateDB, utcnow
-from bot.sl_tp import SlTpMonitor
+from bot.sl_tp import SlTpMonitor, calc_levels
+from bot import pyramid, notify
 
 
 def parse_args():
@@ -163,8 +164,43 @@ def main():
                         trade_client_id=trade["client_id"],
                         reason=reason,
                     )
+                    exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
+                    pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
+                    notify.send_trade_sell(
+                        bot_cfg.symbol, float(trade["amount"]), exit_price,
+                        reason, pnl_eur, bot_cfg.dry_run,
+                    )
                 if triggered:
                     balance = feed.fetch_balance()
+
+                # 4b) Pyramid-Nachkauf prüfen (News + Profit → Nachkauf)
+                active_trades = db.get_open_trades(bot_cfg.symbol)
+                if active_trades and not triggered:
+                    trade   = active_trades[0]
+                    regime  = _sv.get("supervisor_regime", "")
+                    news_db = os.path.join(risk_cfg.db_dir, "news.db")
+                    ok_pyr, pyr_reason = pyramid.should_pyramid(
+                        trade, last_price, regime, news_db, bot_cfg.symbol
+                    )
+                    if ok_pyr:
+                        pyr_amount = risk.calc_buy_amount(balance, last_price, exchange) * pyramid.PYRAMID_SIZE_FRACTION
+                        log.info(f"🔺 Pyramid-Bedingung erfüllt ({pyr_reason}) – kaufe {pyr_amount:.6f}")
+                        pyr_order = executor.pyramid_buy(pyr_amount, last_price)
+                        if pyr_order:
+                            actual_price = pyr_order.get("average") or pyr_order.get("price") or last_price
+                            old_amount   = float(trade["amount"])
+                            new_amount   = old_amount + pyr_amount
+                            new_entry    = (trade["entry_price"] * old_amount + actual_price * pyr_amount) / new_amount
+                            new_sl, new_tp = calc_levels(new_entry, risk_cfg, candles)
+                            db.update_trade_pyramid(trade["client_id"], new_amount, new_entry, new_sl, new_tp)
+                            log.info(
+                                f"🔺 Pyramid-Kauf: +{pyr_amount:.6f} @ {actual_price:.4f} | "
+                                f"Avg-Entry={new_entry:.4f} SL={new_sl:.4f} TP={new_tp:.4f}"
+                            )
+                            notify.send_pyramid_buy(bot_cfg.symbol, pyr_amount, actual_price, new_entry, bot_cfg.dry_run)
+                            balance = feed.fetch_balance()
+                    else:
+                        log.debug(f"Pyramid nicht ausgelöst: {pyr_reason}")
 
                 # 5) Guardrails
                 ok, reason = risk.check_guardrails(open_orders, balance)
@@ -183,6 +219,10 @@ def main():
                         executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price, candles)
                     elif signal == "SELL":
                         executor.sell(risk.calc_sell_amount(balance), last_price)
+                        notify.send_trade_sell(
+                            bot_cfg.symbol, balance["base"], last_price,
+                            "signal_close", dry_run=bot_cfg.dry_run,
+                        )
 
                 # 7) Zustand für Web-Interface persistieren
                 db.set_state("symbol",         bot_cfg.symbol)

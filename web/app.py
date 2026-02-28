@@ -371,13 +371,28 @@ def load_all_bots() -> list[dict]:
 @app.route("/")
 def index():
     bots = load_all_bots()
-    bal  = _fetch_kraken_balance()
+    # Cache nutzen wenn vorhanden (kein blockierender API-Call beim Seitenaufbau)
+    # JS aktualisiert die Werte via /api/balance im Hintergrund
+    bal = _balance_cache["data"]
+    if bal and not bal.get("error"):
+        fiat_eur   = bal.get("eur_free", 0)
+        coin_total = bal.get("coins_total_eur", 0)
+    else:
+        # Fallback auf Bot-DBs wenn Cache leer (erster Start)
+        active = [b for b in bots if not b.get("error")]
+        seen: dict[str, float] = {}
+        for b in sorted(active, key=lambda b: b.get("last_update", ""), reverse=True):
+            q = b.get("quote", "EUR")
+            if q not in seen:
+                seen[q] = b["balance_quote_float"] * b.get("rate_to_eur", 1.0)
+        fiat_eur   = sum(seen.values())
+        coin_total = sum(b["coin_value_eur"] for b in active)
     return render_template(
         "index.html",
         bots=bots,
-        portfolio_eur=bal.get("eur_free", 0),
-        portfolio_coins=bal.get("coins_total_eur", 0),
-        portfolio_total=bal.get("total_eur", 0),
+        portfolio_eur=round(fiat_eur, 2),
+        portfolio_coins=round(coin_total, 2),
+        portfolio_total=round(fiat_eur + coin_total, 2),
     )
 
 

@@ -329,8 +329,8 @@
     <h1>⬡ Trading Bots &nbsp;<span style="color:#484f58;font-size:12px">{{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</span></h1>
     <div style="margin-top:6px;font-size:12px;color:#8b949e">
       Portfolio:
-      <span style="color:#e6edf3;font-weight:bold">{{ "%.2f"|format(portfolio_total) }} EUR</span>
-      <span style="color:#484f58">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
+      <span id="port-total" style="color:#e6edf3;font-weight:bold">{{ "%.2f"|format(portfolio_total) }} EUR</span>
+      <span id="port-detail" style="color:#484f58">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
     </div>
   </div>
   <div class="meta">
@@ -918,6 +918,22 @@
       }
     });
   }
+
+  // ── Balance im Hintergrund alle 5 Minuten aktualisieren ─────────────
+  async function updateBalance() {
+    try {
+      const r = await fetch('/api/balance');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.error) return;
+      const tot = document.getElementById('port-total');
+      const det = document.getElementById('port-detail');
+      if (tot) tot.textContent = d.total_eur.toFixed(2) + ' EUR';
+      if (det) det.innerHTML = '&nbsp;(' + d.eur_free.toFixed(2) + ' EUR Fiat &nbsp;+&nbsp; ' + d.coins_total_eur.toFixed(2) + ' EUR Coins)';
+    } catch(e) {}
+  }
+  updateBalance();
+  setInterval(updateBalance, 300000);  // alle 5 Minuten
 
   // Sofort beim Laden + alle 5s
   updateCards();
