@@ -23,6 +23,8 @@ class NewsAgentConfig:
     title_dedupe_threshold: float = 0.50 # Jaccard-Ähnlichkeit ab der = Duplikat
     # Qualitätsfilter: Artikel mit zu kurzem Titel (Reddit-Posts, Placeholders etc.)
     min_title_words: int = 5             # Mindestanzahl Wörter im Titel
+    # Volltext-Crawling via trafilatura (opt-in, langsamer)
+    fetch_full_body: bool = False
 
     # Pfade
     db_path: str = "db/news.db"

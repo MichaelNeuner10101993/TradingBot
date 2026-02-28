@@ -10,7 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 from news.config import NewsAgentConfig
-from news.fetcher import CryptoPanicFetcher, RSSFetcher, GoogleNewsFetcher, TwitterFetcher, NewsItem
+from news.fetcher import (CryptoPanicFetcher, RSSFetcher, GoogleNewsFetcher,
+                           TwitterFetcher, FearGreedFetcher, CoinGeckoTrendingFetcher,
+                           NewsItem)
 from news import sentiment as sent
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,11 @@ CREATE TABLE IF NOT EXISTS alert_history (
     action          TEXT    DEFAULT 'sent',   -- 'sent' | 'dismissed' | 'stopped_bot'
     acted_at        TEXT    NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_news_fetched_at
+    ON news_events(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_ts
+    ON sentiment_scores(symbol, timestamp);
 """
 
 
@@ -197,6 +204,7 @@ class NewsAgent:
             RSSFetcher(
                 feed_urls=self.cfg.rss_feeds,
                 max_items=self.cfg.max_articles_per_run,
+                fetch_full_body=self.cfg.fetch_full_body,
             ),
             GoogleNewsFetcher(
                 queries=self.cfg.google_news_queries,
@@ -206,6 +214,8 @@ class NewsAgent:
                 bearer_token=self.cfg.twitter_bearer_token,
                 max_results=10,
             ),
+            FearGreedFetcher(),
+            CoinGeckoTrendingFetcher(),
         ]
 
     # ------------------------------------------------------------------
@@ -274,6 +284,16 @@ class NewsAgent:
             result = sent.combined_score(item.text)
             score = result["score"]
             label = result["label"]
+
+            # Fear & Greed: direkter Score-Override (VADER interpretiert den Titel falsch)
+            if item.source == "fear_greed":
+                import re as _re
+                m = _re.search(r"Index: (\d+)", item.title)
+                if m:
+                    raw_val = int(m.group(1))
+                    score   = round((raw_val - 50) / 50, 3)
+                    label   = sent.score_to_label(score, threshold=0.2)
+                    result  = {"score": score, "label": label, "vader": score, "textblob": score}
 
             logger.debug(
                 "[%s] %s | score=%.3f | coins=%s",
