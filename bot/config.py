@@ -47,6 +47,14 @@ class RiskConfig:
     atr_period: int = 14
     atr_sl_mult: float = 1.5             # SL = entry - 1.5 × ATR
     atr_tp_mult: float = 2.5             # TP = entry + 2.5 × ATR
+    # Trailing Stop-Loss: SL zieht mit steigendem Kurs nach oben
+    use_trailing_sl: bool = False
+    trailing_sl_pct: float = 0.02        # 2% Abstand unter aktuellem Kurs
+    # Cooldown nach SL-Hit: verhindert sofortigen Wiederkauf
+    sl_cooldown_candles: int = 3         # 3 Candles (= 15min bei 5m-Timeframe)
+    # Volumen-Filter: Signal nur bei überdurchschnittlichem Volumen
+    volume_filter: bool = False          # default aus (konservativ)
+    volume_factor: float = 1.2           # Crossover-Candle muss 1.2× Avg(20) haben
 
 
 @dataclass

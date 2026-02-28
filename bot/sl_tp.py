@@ -55,6 +55,26 @@ def calc_levels(
     return sl_price, tp_price
 
 
+def update_trailing_sl(
+    trade: dict,
+    current_price: float,
+    trailing_sl_pct: float,
+) -> float | None:
+    """
+    Berechnet den neuen Trailing-SL-Preis.
+    Gibt den neuen sl_price zurück wenn er den aktuellen überschreitet, sonst None.
+    SL wird nur angehoben, nie abgesenkt.
+    """
+    trail_price = current_price * (1 - trailing_sl_pct)
+    if trail_price > float(trade["sl_price"]):
+        log.debug(
+            f"Trailing-SL: {float(trade['sl_price']):.6f} → {trail_price:.6f} "
+            f"(Preis={current_price:.6f} -{trailing_sl_pct*100:.1f}%)"
+        )
+        return trail_price
+    return None
+
+
 class SlTpMonitor:
     def __init__(self, cfg: RiskConfig):
         self.cfg = cfg

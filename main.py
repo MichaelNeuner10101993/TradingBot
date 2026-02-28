@@ -21,8 +21,13 @@ from bot.strategy import get_signal
 from bot.risk import RiskManager
 from bot.execution import Executor
 from bot.persistence import StateDB, utcnow
-from bot.sl_tp import SlTpMonitor, calc_levels
+from bot.sl_tp import SlTpMonitor, calc_levels, update_trailing_sl
 from bot import pyramid, notify
+
+
+def _timeframe_to_seconds(tf: str) -> int:
+    _map = {"m": 60, "h": 3600, "d": 86400}
+    return int(tf[:-1]) * _map.get(tf[-1].lower(), 60)
 
 
 def parse_args():
@@ -38,7 +43,12 @@ def parse_args():
     p.add_argument("--live",          action="store_true", help="Setzt dry_run=False")
     p.add_argument("--db",            default=None, help="Pfad zur SQLite-DB")
     p.add_argument("--log-dir",       default=None, help="Log-Verzeichnis")
-    p.add_argument("--startup-delay", type=int, default=0, help="Sekunden warten vor erster API-Anfrage (API-Rate-Limit bei mehreren Bots staffeln)")
+    p.add_argument("--startup-delay",  type=int,   default=0,    help="Sekunden warten vor erster API-Anfrage (API-Rate-Limit bei mehreren Bots staffeln)")
+    p.add_argument("--trailing-sl",    action="store_true",       help="Trailing Stop-Loss aktivieren")
+    p.add_argument("--trailing-sl-pct", type=float, default=None, help="Trailing-SL-Abstand in Dezimal (z.B. 0.02 = 2%%)")
+    p.add_argument("--sl-cooldown",    type=int,   default=None,  help="Cooldown-Candles nach SL-Hit (default: 3)")
+    p.add_argument("--volume-filter",  action="store_true",       help="Volumen-Filter aktivieren")
+    p.add_argument("--volume-factor",  type=float, default=None,  help="Volumen-Faktor (default: 1.2)")
     return p.parse_args()
 
 
@@ -64,6 +74,15 @@ def main():
     if args.sl:        risk_cfg.stop_loss_pct   = args.sl
     if args.tp:        risk_cfg.take_profit_pct  = args.tp
     if args.safety_buffer is not None: risk_cfg.safety_buffer_pct = args.safety_buffer
+
+    # CLI-Feature-Flags (haben Vorrang vor Supervisor-Empfehlung)
+    _cli_trailing_set = args.trailing_sl
+    _cli_vol_set      = args.volume_filter
+    if args.trailing_sl:                    risk_cfg.use_trailing_sl    = True
+    if args.trailing_sl_pct is not None:    risk_cfg.trailing_sl_pct    = args.trailing_sl_pct
+    if args.sl_cooldown is not None:        risk_cfg.sl_cooldown_candles = args.sl_cooldown
+    if args.volume_filter:                  risk_cfg.volume_filter      = True
+    if args.volume_factor is not None:      risk_cfg.volume_factor      = args.volume_factor
 
     # DB-Verzeichnis für Bot-Zählung
     risk_cfg.db_dir = os.path.dirname(ops_cfg.db_path) or "db"
@@ -117,17 +136,27 @@ def main():
                         if _sv.get("supervisor_fast"):
                             bot_cfg.fast_period = int(_sv.get("supervisor_fast", bot_cfg.fast_period))
                             bot_cfg.slow_period = int(_sv.get("supervisor_slow", bot_cfg.slow_period))
+                        # Feature-Flags nur übernehmen wenn NICHT via CLI gesetzt
+                        if not _cli_trailing_set:
+                            sv_trail = _sv.get("supervisor_use_trailing_sl", "")
+                            if sv_trail.lower() in ("true", "false"):
+                                risk_cfg.use_trailing_sl = sv_trail.lower() == "true"
+                        if not _cli_vol_set:
+                            sv_vol = _sv.get("supervisor_volume_filter", "")
+                            if sv_vol.lower() in ("true", "false"):
+                                risk_cfg.volume_filter = sv_vol.lower() == "true"
                         log.debug(
                             f"Regime={_sv['supervisor_regime']} | "
                             f"Strategie={_sv.get('supervisor_strategy_name','?')} "
                             f"f={bot_cfg.fast_period}/s={bot_cfg.slow_period} | "
                             f"RSI<{risk_cfg.rsi_buy_max} RSI>{risk_cfg.rsi_sell_min} | "
-                            f"SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult}"
+                            f"SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult} | "
+                            f"trailing={risk_cfg.use_trailing_sl} vol={risk_cfg.volume_filter}"
                         )
                     except (ValueError, TypeError) as e:
                         log.warning(f"Supervisor-State ungültig: {e}")
 
-                # 3) Signal berechnen (inkl. RSI-Filter)
+                # 3) Signal berechnen (inkl. RSI- + Volumen-Filter)
                 signal, last_price, rsi_val = get_signal(
                     candles,
                     bot_cfg.fast_period,
@@ -135,6 +164,8 @@ def main():
                     risk_cfg.rsi_period,
                     risk_cfg.rsi_buy_max,
                     risk_cfg.rsi_sell_min,
+                    volume_filter=risk_cfg.volume_filter,
+                    volume_factor=risk_cfg.volume_factor,
                 )
                 rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
 
@@ -152,6 +183,14 @@ def main():
                     f"{balance['base_currency']}={balance['base']:.6f}"
                 )
 
+                # 3b) Trailing-SL-Update (SL folgt steigendem Kurs nach oben)
+                if risk_cfg.use_trailing_sl:
+                    for trade in db.get_open_trades(bot_cfg.symbol):
+                        new_sl = update_trailing_sl(trade, last_price, risk_cfg.trailing_sl_pct)
+                        if new_sl is not None:
+                            db.update_trade_sltp(trade["client_id"], new_sl, float(trade["tp_price"]))
+                            log.info(f"Trailing-SL: {float(trade['sl_price']):.6f} → {new_sl:.6f}")
+
                 # 4) SL/TP prüfen (höchste Priorität)
                 open_trades = db.get_open_trades(bot_cfg.symbol)
                 triggered   = sl_tp.check(last_price, open_trades)
@@ -164,6 +203,8 @@ def main():
                         trade_client_id=trade["client_id"],
                         reason=reason,
                     )
+                    if reason == "sl_hit":
+                        db.set_state("last_sl_at", utcnow())
                     exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
                     pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
                     notify.send_trade_sell(
@@ -215,6 +256,15 @@ def main():
                     log.debug(f"Kein Trade: {reason}")
                 else:
                     # 6) Order ausführen
+                    if signal == "BUY" and risk_cfg.sl_cooldown_candles > 0:
+                        last_sl_at = db.get_state("last_sl_at", "")
+                        if last_sl_at:
+                            elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(last_sl_at)).total_seconds()
+                            cooldown_sec = risk_cfg.sl_cooldown_candles * _timeframe_to_seconds(bot_cfg.timeframe)
+                            if elapsed < cooldown_sec:
+                                signal = "HOLD"
+                                log.info(f"SL-Cooldown aktiv: {int(cooldown_sec - elapsed)}s verbleibend")
+
                     if signal == "BUY":
                         executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price, candles)
                     elif signal == "SELL":
@@ -243,6 +293,8 @@ def main():
                 db.set_state("regime",         _sv.get("supervisor_regime", "–"))
                 db.set_state("strategy_name",  _sv.get("supervisor_strategy_name", "Standard"))
                 db.set_state("sim_pnl",        _sv.get("supervisor_sim_pnl", "–"))
+                db.set_state("use_trailing_sl", str(risk_cfg.use_trailing_sl))
+                db.set_state("volume_filter",   str(risk_cfg.volume_filter))
                 db.set_state("status",         "running")
 
                 breaker.success()

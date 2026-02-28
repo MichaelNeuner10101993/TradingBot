@@ -122,3 +122,33 @@ def send_pyramid_buy(
         f"Avg-Entry: <b>{_fmt(new_entry)} EUR</b>"
     )
     _send_sync(text)
+
+
+def send_supervisor_recommendation(
+    symbol: str,
+    best: dict,
+    cur_trailing: bool,
+    cur_vol: bool,
+):
+    """Telegram-Empfehlung wenn Supervisor eine bessere Feature-Kombination gefunden hat."""
+    trailing_rec = "✅" if best.get("use_trailing_sl") else "❌"
+    vol_rec      = "✅" if best.get("volume_filter")   else "❌"
+    trailing_cur = "✅" if cur_trailing                else "❌"
+    vol_cur      = "✅" if cur_vol                     else "❌"
+
+    hints = []
+    if best.get("use_trailing_sl") and not cur_trailing:
+        hints.append("--trailing-sl")
+    if best.get("volume_filter") and not cur_vol:
+        hints.append("--volume-filter")
+    hint_line = f"\n→ Neustart mit: <code>{' '.join(hints)}</code>" if hints else ""
+
+    text = (
+        f"🔬 <b>Supervisor-Empfehlung: {symbol}</b>\n"
+        f"Strategie: {best['name']} {best['fast']}/{best['slow']}  "
+        f"Sim-P&L: {best['pnl_pct']:+.2f}% ({best['num_trades']} Trades)\n"
+        f"Trailing SL: {trailing_rec} empfohlen  (aktuell: {trailing_cur})\n"
+        f"Volumen-Filter: {vol_rec} empfohlen  (aktuell: {vol_cur})"
+        f"{hint_line}"
+    )
+    _send_sync(text)

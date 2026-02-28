@@ -31,7 +31,14 @@ from bot.ops import setup_logging
 from bot.persistence import StateDB, utcnow
 from bot.regime import classify_regime, REGIME_TEMPLATES
 from bot import candles_db as cdb
-from bot import optimizer
+from bot import optimizer, notify
+
+FEATURE_COMBOS = [
+    {"use_trailing_sl": False, "volume_filter": False},
+    {"use_trailing_sl": True,  "volume_filter": False},
+    {"use_trailing_sl": False, "volume_filter": True},
+    {"use_trailing_sl": True,  "volume_filter": True},
+]
 
 
 def parse_args():
@@ -92,6 +99,7 @@ def _write(
         log.info(
             f"[DRY] {os.path.basename(db_path)}: regime={regime} | "
             f"strategie={best['name']} (f={best['fast']}/s={best['slow']}) | "
+            f"trailing={best.get('use_trailing_sl',False)} vol={best.get('volume_filter',False)} | "
             f"sim_pnl={best['pnl_pct']:+.2f}% | trades={best['num_trades']}"
         )
         return
@@ -111,6 +119,8 @@ def _write(
         db.set_state("supervisor_sim_pnl",         f"{best['pnl_pct']:+.2f}")
         db.set_state("supervisor_sim_trades",      str(best["num_trades"]))
         db.set_state("supervisor_last_update",     utcnow())
+        db.set_state("supervisor_use_trailing_sl", str(best.get("use_trailing_sl", False)))
+        db.set_state("supervisor_volume_filter",   str(best.get("volume_filter", False)))
         db.log_supervisor_cycle(
             regime=regime,
             adx=adx_val,
@@ -121,7 +131,17 @@ def _write(
             sim_pnl=best["pnl_pct"],
             num_trades=best["num_trades"],
             source="own",
+            use_trailing_sl=best.get("use_trailing_sl", False),
+            volume_filter=best.get("volume_filter", False),
         )
+
+        # Telegram-Empfehlung wenn Supervisor-Empfehlung ≠ aktuelle Bot-Einstellung
+        cur_trailing = db.get_state("use_trailing_sl", "False").lower() == "true"
+        cur_vol      = db.get_state("volume_filter",   "False").lower() == "true"
+        if best.get("use_trailing_sl", False) != cur_trailing or best.get("volume_filter", False) != cur_vol:
+            symbol = db.get_state("symbol", os.path.basename(db_path))
+            notify.send_supervisor_recommendation(symbol, best, cur_trailing, cur_vol)
+
         db.close()
     except Exception as e:
         log.error(f"DB-Schreibfehler ({db_path}): {e}")
@@ -157,7 +177,7 @@ def _cross_bot_learning(results: dict, dry_run: bool):
             if sym == winner_sym:
                 continue
 
-            # Winner-Strategie auf Ziel-Candles testen
+            # Winner-Strategie auf Ziel-Candles testen (mit Winner-Feature-Flags)
             shared = optimizer.simulate(
                 data["candles"],
                 winner_data["best"]["fast"],
@@ -166,6 +186,8 @@ def _cross_bot_learning(results: dict, dry_run: bool):
                 rsi_sell_min=tmpl["rsi_sell_min"],
                 atr_sl_mult=tmpl["atr_sl_mult"],
                 atr_tp_mult=tmpl["atr_tp_mult"],
+                use_trailing_sl=winner_data["best"].get("use_trailing_sl", False),
+                volume_filter=winner_data["best"].get("volume_filter", False),
             )
             if shared is None:
                 continue
@@ -183,11 +205,13 @@ def _cross_bot_learning(results: dict, dry_run: bool):
                 if not dry_run:
                     try:
                         db = StateDB(data["db_path"])
-                        db.set_state("supervisor_fast",          str(winner_data["best"]["fast"]))
-                        db.set_state("supervisor_slow",          str(winner_data["best"]["slow"]))
-                        db.set_state("supervisor_strategy_name", shared_name)
-                        db.set_state("supervisor_sim_pnl",       f"{shared_pnl:+.2f}")
-                        db.set_state("supervisor_sim_trades",    str(shared["num_trades"]))
+                        db.set_state("supervisor_fast",            str(winner_data["best"]["fast"]))
+                        db.set_state("supervisor_slow",            str(winner_data["best"]["slow"]))
+                        db.set_state("supervisor_strategy_name",   shared_name)
+                        db.set_state("supervisor_sim_pnl",         f"{shared_pnl:+.2f}")
+                        db.set_state("supervisor_sim_trades",      str(shared["num_trades"]))
+                        db.set_state("supervisor_use_trailing_sl", str(winner_data["best"].get("use_trailing_sl", False)))
+                        db.set_state("supervisor_volume_filter",   str(winner_data["best"].get("volume_filter", False)))
                         db.log_supervisor_cycle(
                             regime=data["regime"],
                             adx=-1,
@@ -198,6 +222,8 @@ def _cross_bot_learning(results: dict, dry_run: bool):
                             sim_pnl=shared_pnl,
                             num_trades=shared["num_trades"],
                             source=f"cross:{winner_sym.split('/')[0]}",
+                            use_trailing_sl=winner_data["best"].get("use_trailing_sl", False),
+                            volume_filter=winner_data["best"].get("volume_filter", False),
                         )
                         db.close()
                     except Exception as e:
@@ -266,15 +292,20 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
             history = cdb.load_candles(conn_c, symbol, timeframe, limit=500)
             log.debug(f"{symbol}: {len(history)} Candles für Optimierung verfügbar")
 
-            # Strategie-Optimierung mit aktuellen Regime-Params
+            # 24-Varianten-Optimierung (6 SMA × 4 Feature-Kombos)
             tmpl = REGIME_TEMPLATES[regime]
-            best = optimizer.best_variant(
-                history,
-                rsi_buy_max=tmpl["rsi_buy_max"],
-                rsi_sell_min=tmpl["rsi_sell_min"],
-                atr_sl_mult=tmpl["atr_sl_mult"],
-                atr_tp_mult=tmpl["atr_tp_mult"],
-            )
+            all_candidates = []
+            for combo in FEATURE_COMBOS:
+                candidate = optimizer.best_variant(
+                    history,
+                    rsi_buy_max=tmpl["rsi_buy_max"],
+                    rsi_sell_min=tmpl["rsi_sell_min"],
+                    atr_sl_mult=tmpl["atr_sl_mult"],
+                    atr_tp_mult=tmpl["atr_tp_mult"],
+                    **combo,
+                )
+                all_candidates.append(candidate)
+            best = max(all_candidates, key=lambda x: (x["pnl_pct"], x["num_trades"]))
 
             _write(db_path, regime, adx_val, atr_pct, best, dry_run)
 

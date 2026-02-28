@@ -98,6 +98,16 @@ class StateDB:
                 source        TEXT     -- 'own' | 'cross:BTC' etc.
             );
         """)
+        # Migration: neue Spalten in supervisor_log (bestehende DBs)
+        for col_def in [
+            "use_trailing_sl INTEGER DEFAULT 0",
+            "volume_filter   INTEGER DEFAULT 0",
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE supervisor_log ADD COLUMN {col_def}")
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Spalte existiert bereits
 
     # --- Orders ---
 
@@ -243,13 +253,17 @@ class StateDB:
         sim_pnl: float,
         num_trades: int,
         source: str = "own",
+        use_trailing_sl: bool = False,
+        volume_filter: bool = False,
     ):
         """Speichert einen Supervisor-Durchlauf in supervisor_log (append-only)."""
         self.conn.execute(
             """INSERT INTO supervisor_log
-               (timestamp, regime, adx, atr_pct, strategy_name, fast, slow, sim_pnl, num_trades, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (utcnow(), regime, adx, atr_pct, strategy_name, fast, slow, sim_pnl, num_trades, source),
+               (timestamp, regime, adx, atr_pct, strategy_name, fast, slow,
+                sim_pnl, num_trades, source, use_trailing_sl, volume_filter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (utcnow(), regime, adx, atr_pct, strategy_name, fast, slow,
+             sim_pnl, num_trades, source, int(use_trailing_sl), int(volume_filter)),
         )
         self.conn.commit()
 

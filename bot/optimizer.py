@@ -85,6 +85,10 @@ def simulate(
     atr_tp_mult: float,
     rsi_period: int = 14,
     atr_period: int = 14,
+    use_trailing_sl: bool = False,
+    trailing_sl_pct: float = 0.02,
+    volume_filter: bool = False,
+    volume_factor: float = 1.2,
 ) -> dict | None:
     """
     Simuliert eine Strategie auf historischen Candles.
@@ -95,9 +99,10 @@ def simulate(
     if len(candles) < min_needed:
         return None
 
-    closes = [c[4] for c in candles]
-    highs  = [c[2] for c in candles]
-    lows   = [c[3] for c in candles]
+    closes  = [c[4] for c in candles]
+    highs   = [c[2] for c in candles]
+    lows    = [c[3] for c in candles]
+    volumes = [c[5] for c in candles] if volume_filter else None
 
     sma_f = _sma_series(closes, fast)
     sma_s = _sma_series(closes, slow)
@@ -110,10 +115,10 @@ def simulate(
     start    = max(slow, rsi_period, atr_period) + 1
 
     for i in range(start, len(candles)):
-        sf_cur = sma_f[i]
-        ss_cur = sma_s[i]
-        sf_prv = sma_f[i - 1]
-        ss_prv = sma_s[i - 1]
+        sf_cur  = sma_f[i]
+        ss_cur  = sma_s[i]
+        sf_prv  = sma_f[i - 1]
+        ss_prv  = sma_s[i - 1]
         rsi_cur = rsi_v[i]
         atr_cur = atr_v[i]
 
@@ -125,6 +130,12 @@ def simulate(
         low   = lows[i]
 
         if position:
+            # Trailing-SL-Update (vor SL-Check – SL wird nur angehoben)
+            if use_trailing_sl:
+                trail = price * (1 - trailing_sl_pct)
+                if trail > position["sl"]:
+                    position["sl"] = trail
+
             # SL/TP prüfen
             if low <= position["sl"]:
                 pnl = _net_pnl(position["entry"], position["sl"])
@@ -145,8 +156,14 @@ def simulate(
                 trades.append(pnl)
                 position = None
         else:
+            # Volumen-Filter: BUY nur bei überdurchschnittlichem Volumen
+            vol_ok = True
+            if volume_filter and volumes and i >= 21:
+                avg_vol = sum(volumes[i - 20:i]) / 20
+                vol_ok  = volumes[i] >= avg_vol * volume_factor
+
             # BUY-Crossover
-            if sf_cur > ss_cur and sf_prv <= ss_prv and rsi_cur < rsi_buy_max:
+            if vol_ok and sf_cur > ss_cur and sf_prv <= ss_prv and rsi_cur < rsi_buy_max:
                 sl = price - atr_sl_mult * atr_cur
                 tp = price + atr_tp_mult * atr_cur
                 position = {"entry": price, "sl": sl, "tp": tp}
@@ -178,6 +195,10 @@ def best_variant(
     atr_sl_mult: float,
     atr_tp_mult: float,
     variants: list | None = None,
+    use_trailing_sl: bool = False,
+    trailing_sl_pct: float = 0.02,
+    volume_filter: bool = False,
+    volume_factor: float = 1.2,
 ) -> dict:
     """
     Testet alle Varianten und gibt die profitabelste zurück.
@@ -192,26 +213,33 @@ def best_variant(
         r = simulate(
             candles, v["fast"], v["slow"],
             rsi_buy_max, rsi_sell_min, atr_sl_mult, atr_tp_mult,
+            use_trailing_sl=use_trailing_sl,
+            trailing_sl_pct=trailing_sl_pct,
+            volume_filter=volume_filter,
+            volume_factor=volume_factor,
         )
         if r is None:
             continue
-        results.append({**v, **r})
+        results.append({**v, **r, "use_trailing_sl": use_trailing_sl, "volume_filter": volume_filter})
         logger.debug(
-            "Variante %-8s (f=%2d s=%2d): P&L=%+.2f%% Trades=%d WinRate=%.0f%%",
+            "Variante %-8s (f=%2d s=%2d) trailing=%s vol=%s: P&L=%+.2f%% Trades=%d WinRate=%.0f%%",
             v["name"], v["fast"], v["slow"],
+            use_trailing_sl, volume_filter,
             r["pnl_pct"], r["num_trades"], r["win_rate"] * 100,
         )
 
     if not results:
         fallback = next(v for v in STRATEGY_VARIANTS if v["name"] == "Standard")
         logger.warning("Kein Ergebnis (zu wenig Daten) – Fallback: Standard")
-        return {**fallback, "pnl_pct": 0.0, "num_trades": 0, "win_rate": 0.0}
+        return {**fallback, "pnl_pct": 0.0, "num_trades": 0, "win_rate": 0.0,
+                "use_trailing_sl": use_trailing_sl, "volume_filter": volume_filter}
 
     results.sort(key=lambda x: (x["pnl_pct"], x["num_trades"]), reverse=True)
     best = results[0]
     logger.info(
-        "Beste Variante: %s (f=%d/s=%d) P&L=%+.2f%% Trades=%d WinRate=%.0f%%",
+        "Beste Variante: %s (f=%d/s=%d) trailing=%s vol=%s P&L=%+.2f%% Trades=%d WinRate=%.0f%%",
         best["name"], best["fast"], best["slow"],
+        best["use_trailing_sl"], best["volume_filter"],
         best["pnl_pct"], best["num_trades"], best["win_rate"] * 100,
     )
     return best

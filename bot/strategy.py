@@ -84,10 +84,13 @@ def get_signal(
     rsi_period: int = 14,
     rsi_buy_max: float = 65.0,
     rsi_sell_min: float = 35.0,
+    volume_filter: bool = False,
+    volume_factor: float = 1.2,
 ) -> tuple[Signal, float, float | None]:
     """
     Gibt (Signal, letzter Close-Preis, RSI-Wert) zurück.
     RSI filtert überkaufte BUY- und überverkaufte SELL-Signale heraus.
+    Optionaler Volumen-Filter: Signal nur wenn letztes Volumen > volume_factor × Avg(20).
     candles: Liste von [timestamp, open, high, low, close, volume]
     """
     closes     = [c[4] for c in candles]
@@ -102,5 +105,20 @@ def get_signal(
         elif signal == "SELL" and rsi_val < rsi_sell_min:
             log.info(f"SELL gefiltert: RSI={rsi_val:.1f} < {rsi_sell_min} (überverkauft)")
             signal = "HOLD"
+
+    # Volumen-Filter: Signal nur bei überdurchschnittlichem Volumen (kein Look-Ahead)
+    if volume_filter and signal != "HOLD" and len(candles) >= 21:
+        volumes    = [c[5] for c in candles]
+        last_vol   = volumes[-1]
+        avg_vol_20 = sum(volumes[-21:-1]) / 20
+        threshold  = avg_vol_20 * volume_factor
+        if last_vol < threshold:
+            log.info(
+                f"{signal} gefiltert: Volumen={last_vol:.2f} < {threshold:.2f} "
+                f"(Avg20={avg_vol_20:.2f} × {volume_factor})"
+            )
+            signal = "HOLD"
+        else:
+            log.debug(f"Volumen-Filter OK: {last_vol:.2f} >= {threshold:.2f}")
 
     return signal, last_price, rsi_val
