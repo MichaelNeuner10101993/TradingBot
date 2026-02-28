@@ -43,7 +43,9 @@ bot/
 │   ├── risk.py              # Dynamisches Position Sizing
 │   ├── execution.py         # Order-Submit, Dry-Run, Post-Trade-Verify
 │   ├── sl_tp.py             # Stop-Loss / Take-Profit Monitor (ATR-basiert)
-│   ├── persistence.py       # SQLite (orders, trades, errors, bot_state)
+│   ├── pyramid.py           # Pyramid-Nachkauf-Logik (News + Profit-Check)
+│   ├── notify.py            # Telegram-Benachrichtigungen (Kauf/Verkauf/Pyramid)
+│   ├── persistence.py       # SQLite (orders, trades, errors, bot_state, supervisor_log)
 │   └── ops.py               # Logging, Retry/Backoff, Circuit Breaker
 │
 ├── news/
@@ -152,6 +154,33 @@ Die Bots übernehmen die angepassten Parameter beim nächsten Loop-Durchlauf **o
 | **TREND** | ADX > 22, ATR% ≤ 3% | buy < 68, sell > 32 | 1.5× | 2.5× |
 | **SIDEWAYS** | ADX ≤ 22, ATR% ≤ 3% | buy < 60, sell > 40 | 1.2× | 1.8× |
 | **VOLATILE** | ATR% > 3% | buy < 55, sell > 45 | 2.0× | 3.5× |
+
+### Cross-Bot-Learning
+
+Nach jedem Optimierungsdurchlauf prüft der Supervisor, ob die beste Strategie eines Coins
+auch auf anderen Coins im **gleichen Regime** besser abschneidet.
+Wenn ja, wird die Strategie übernommen und als `"Agile→BTC"` gekennzeichnet.
+
+```
+BTC (TREND): Agile 7/18 → +3.2%
+XRP (TREND): Swing 21/55 → +0.8%
+→ XRP übernimmt "Agile" von BTC  (validiert auf XRP-Candles: +2.1% > +0.8%)
+```
+
+### Supervisor-Erfahrung (supervisor_log)
+
+Jeder Durchlauf wird append-only in `supervisor_log` persistiert (eine Tabelle pro Bot-DB):
+
+| Spalte | Inhalt |
+|--------|--------|
+| `regime` | TREND / SIDEWAYS / VOLATILE |
+| `adx` | ADX-Wert zum Zeitpunkt |
+| `strategy_name` | z.B. `Agile`, `Swing`, `Agile→BTC` |
+| `fast / slow` | Gewählte SMA-Parameter |
+| `sim_pnl` | Simulierter P&L (Backtest) |
+| `source` | `own` oder `cross:BTC` |
+
+Abfrage via Telegram: `/supervisor` (Übersicht) oder `/supervisor BTC/EUR` (Verlauf).
 
 ### Supervisor starten
 
@@ -264,6 +293,44 @@ Die `--startup-delay` Werte staffeln API-Calls beim gleichzeitigen Start:
 
 ---
 
+## Pyramid-Nachkaufen
+
+Der Bot kann eine offene Position automatisch aufstocken (Pyramiding), wenn alle Bedingungen gleichzeitig erfüllt sind:
+
+| Bedingung | Schwelle |
+|-----------|---------|
+| Position im Gewinn | ≥ 1.5% |
+| Marktregime | TREND oder SIDEWAYS (nicht VOLATILE) |
+| Nachrichten-Sentiment (letzte 4h) | Score ≥ 0.4 (bullish) |
+| Bisherige Nachkäufe im Trade | 0 (max. 1 Nachkauf pro Trade) |
+
+**Nachkauf-Größe:** 25% der normalen Positionsgröße.
+**Nach dem Kauf:** Gewichteter Avg-Entry, neue SL/TP werden berechnet und in der DB aktualisiert.
+
+```
+Offene Position: 0.01 BTC @ 85.000 EUR  (+2.3%)
+News-Sentiment:  +0.62 (bullish)
+Regime:          TREND
+→ Pyramid-Kauf: +0.0025 BTC @ 86.950 EUR
+→ Neuer Avg-Entry: 85.390 EUR  SL: 84.100  TP: 88.200
+```
+
+---
+
+## Trade-Benachrichtigungen
+
+Alle Kauf-/Verkaufs-Events werden automatisch per Telegram gemeldet:
+
+| Event | Nachricht |
+|-------|-----------|
+| Kauf | 🟢 KAUF BTC/EUR – Menge @ Preis · SL / TP mit % |
+| Verkauf (Signal) | 📉 VERKAUF BTC/EUR – Menge @ Preis |
+| Stop-Loss | 🛑 STOP-LOSS BTC/EUR – P&L netto |
+| Take-Profit | 💰 TAKE-PROFIT BTC/EUR – P&L netto |
+| Pyramid | 🔺 NACHKAUF BTC/EUR – neuer Avg-Entry |
+
+---
+
 ## News-Agent
 
 Überwacht Krypto-News aus 10+ Quellen, berechnet Sentiment-Scores
@@ -323,6 +390,10 @@ sudo systemctl start news-agent
 |--------|--------------|
 | `/status` | Alle Bots: Status, Signal, Regime + Gesamt-Balance (Frei/Coins/Total) |
 | `/portfolio` | Offene Positionen: Entry, Jetzt-Preis, P&L EUR+%, SL/TP mit Abstand |
+| `/rendite` | Rentabilität: Win-Rate, Gesamt-P&L, beste/schlechteste Trades, Sim-P&L |
+| `/holdings` | Alle Coins auf Kraken (Menge × Preis, sortiert nach EUR-Wert) |
+| `/supervisor` | Supervisor-Übersicht: letztes Regime/Strategie/Sim-P&L pro Bot |
+| `/supervisor BTC/EUR` | Detailverlauf: Regime-Verteilung, Top-Strategien, Cross-Bot-Events |
 | `/params BTC/EUR` | Parameter eines Bots: SMA, RSI, ATR, Regime, Fallback SL/TP |
 | `/start_bot BTC/EUR` | Bot starten |
 | `/stop_bot BTC/EUR` | Bot stoppen |
@@ -331,6 +402,9 @@ sudo systemctl start news-agent
 | `/sell BTC/EUR` | Force-SELL beim nächsten Loop (Position schließen) |
 | `/set_sl BTC/EUR 2.0` | Stop-Loss auf 2% unter Entry-Preis setzen |
 | `/set_tp BTC/EUR 4.0` | Take-Profit auf 4% über Entry-Preis setzen |
+
+Alle Befehle funktionieren auch als **Freitext** ohne `/` – der Bot erkennt Intents per Regex:
+`status` · `portfolio` · `rendite` · `holdings` · `erfahrung` · `stoppe BTC` · `starte ETH` · `kauf BTC` · `sl BTC 2`
 
 ### Alert-Inline-Buttons
 
