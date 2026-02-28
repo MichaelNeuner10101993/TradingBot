@@ -99,8 +99,9 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("set_sl",    self._cmd_set_sl))
         self._app.add_handler(CommandHandler("set_tp",    self._cmd_set_tp))
         self._app.add_handler(CommandHandler("params",    self._cmd_params))
-        self._app.add_handler(CommandHandler("holdings",  self._cmd_holdings))
-        self._app.add_handler(CommandHandler("rendite",   self._cmd_rendite))
+        self._app.add_handler(CommandHandler("holdings",    self._cmd_holdings))
+        self._app.add_handler(CommandHandler("rendite",     self._cmd_rendite))
+        self._app.add_handler(CommandHandler("supervisor",  self._cmd_supervisor))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -128,8 +129,9 @@ class TelegramNewsBot:
             ("set_sl",    "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
             ("set_tp",    "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
             ("holdings",  "Alle gehaltenen Coins auf Kraken"),
-            ("rendite",   "Detaillierte Rentabilität aller Bots"),
-            ("help",      "Alle Befehle anzeigen"),
+            ("rendite",     "Detaillierte Rentabilität aller Bots"),
+            ("supervisor",  "Supervisor-Erfahrung abrufen (z.B. /supervisor BTC/EUR)"),
+            ("help",        "Alle Befehle anzeigen"),
         ]
         try:
             resp = requests.post(
@@ -353,6 +355,7 @@ class TelegramNewsBot:
             "/portfolio \\- Offene Positionen \\+ P&L\n"
             "/rendite \\- Detaillierte Rentabilität \\(Win\\-Rate, P&L, Trades\\)\n"
             "/holdings \\- Alle gehaltenen Coins auf Kraken\n"
+            "/supervisor \\- Supervisor\\-Erfahrung \\(Regime\\-Verlauf, Strategien\\)\n"
             "/params BTC/EUR \\- Parameter anzeigen\n\n"
             "▶ *Bot\\-Verwaltung*\n"
             "/start\\_bot BTC/EUR \\- Bot starten\n"
@@ -572,6 +575,144 @@ class TelegramNewsBot:
             logger.exception("_cmd_rendite Fehler")
             await update.message.reply_text(f"❌ Fehler: {e}")
 
+    async def _cmd_supervisor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt die gesammelte Erfahrung des Supervisors (Regime-Historie, Strategie-Verlauf)."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+
+        import os
+        import glob as _glob
+
+        db_dir = os.path.dirname(os.path.abspath(self.cfg.db_path))
+        symbol_arg = " ".join(context.args).upper().strip() if context.args else None
+        # Symbol normalisieren (BTC → BTC/EUR)
+        if symbol_arg and "/" not in symbol_arg:
+            symbol_arg = symbol_arg + "/EUR"
+
+        try:
+            if symbol_arg:
+                # Detailansicht eines einzelnen Bots
+                safe = symbol_arg.replace("/", "_")
+                db_path = os.path.join(db_dir, f"{safe}.db")
+                if not os.path.exists(db_path):
+                    await update.message.reply_text(
+                        f"❌ Keine DB für <b>{symbol_arg}</b> gefunden.", parse_mode="HTML"
+                    )
+                    return
+
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM supervisor_log ORDER BY id DESC LIMIT 20"
+                ).fetchall()
+                conn.close()
+
+                if not rows:
+                    await update.message.reply_text(
+                        f"ℹ️ Noch keine Supervisor-Einträge für <b>{symbol_arg}</b>.\n"
+                        f"Der Supervisor speichert erst nach dem nächsten Durchlauf.",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                # Statistiken berechnen
+                regime_counts: dict = {}
+                strat_counts:  dict = {}
+                cross_events:  list = []
+                pnl_vals:      list = []
+
+                for r in rows:
+                    regime_counts[r["regime"]] = regime_counts.get(r["regime"], 0) + 1
+                    strat_counts[r["strategy_name"]] = strat_counts.get(r["strategy_name"], 0) + 1
+                    if r["source"] and r["source"].startswith("cross:"):
+                        cross_events.append(r)
+                    if r["sim_pnl"] is not None:
+                        pnl_vals.append(r["sim_pnl"])
+
+                total = len(rows)
+                regime_str = "  ".join(
+                    f"{regime}: {cnt}/{total}" for regime, cnt in sorted(
+                        regime_counts.items(), key=lambda x: -x[1]
+                    )
+                )
+                top_strats = sorted(strat_counts.items(), key=lambda x: -x[1])[:3]
+                strat_str  = ", ".join(f"{n} ({c}×)" for n, c in top_strats)
+                avg_pnl    = sum(pnl_vals) / len(pnl_vals) if pnl_vals else 0.0
+
+                lines = [
+                    f"🧠 <b>Supervisor-Erfahrung: {symbol_arg}</b>\n",
+                    f"📋 Letzte {total} Einträge (max. 20)\n",
+                    f"📊 Regime-Verteilung: {regime_str}",
+                    f"🎯 Top-Strategien: {strat_str}",
+                    f"📈 Ø Sim-P&amp;L: {avg_pnl:+.2f}%",
+                ]
+
+                if cross_events:
+                    lines.append(f"\n🔗 Cross-Bot-Übernahmen: {len(cross_events)}×")
+                    for ce in cross_events[:3]:
+                        ts = ce["timestamp"][:16].replace("T", " ") if ce["timestamp"] else "?"
+                        lines.append(
+                            f"  [{ts}] {ce['strategy_name']} ({ce['sim_pnl']:+.2f}%)"
+                        )
+
+                lines.append("\n<b>Verlauf (neueste zuerst):</b>")
+                for r in rows[:10]:
+                    ts = r["timestamp"][:16].replace("T", " ") if r["timestamp"] else "?"
+                    src = f" ← {r['source']}" if r["source"] and r["source"] != "own" else ""
+                    adx_str = f" ADX={r['adx']:.0f}" if r["adx"] and r["adx"] >= 0 else ""
+                    lines.append(
+                        f"  {ts} | {r['regime']}{adx_str} | "
+                        f"{r['strategy_name']} {r['fast']}/{r['slow']} | "
+                        f"{r['sim_pnl']:+.2f}%{src}"
+                    )
+
+                await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+            else:
+                # Übersicht: letzter Eintrag pro Bot
+                db_paths = sorted(_glob.glob(os.path.join(db_dir, "*.db")))
+                db_paths = [p for p in db_paths if os.path.basename(p) not in ("candles.db", "news.db")]
+
+                if not db_paths:
+                    await update.message.reply_text("ℹ️ Keine Bot-DBs gefunden.", parse_mode="HTML")
+                    return
+
+                lines = ["🧠 <b>Supervisor-Übersicht</b>\n"]
+                for db_path in db_paths:
+                    try:
+                        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                        conn.row_factory = sqlite3.Row
+                        row = conn.execute(
+                            "SELECT * FROM supervisor_log ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                        sym_row = conn.execute(
+                            "SELECT value FROM bot_state WHERE key='symbol'"
+                        ).fetchone()
+                        count = conn.execute("SELECT COUNT(*) FROM supervisor_log").fetchone()[0]
+                        conn.close()
+
+                        sym = sym_row[0] if sym_row else os.path.basename(db_path).replace(".db", "").replace("_", "/", 1)
+                        if row:
+                            ts  = row["timestamp"][:16].replace("T", " ") if row["timestamp"] else "?"
+                            src = f" ← {row['source']}" if row["source"] and row["source"] != "own" else ""
+                            lines.append(
+                                f"🔹 <b>{sym}</b> ({count} Einträge)\n"
+                                f"   Letztes Regime: {row['regime']} | {row['strategy_name']} {row['fast']}/{row['slow']}\n"
+                                f"   Sim-P&amp;L: {row['sim_pnl']:+.2f}% | {ts}{src}\n"
+                            )
+                        else:
+                            lines.append(f"🔹 <b>{sym}</b> – noch keine Supervisor-Daten\n")
+                    except Exception:
+                        continue
+
+                lines.append("💡 <i>/supervisor BTC/EUR – Detailansicht mit Verlauf</i>")
+                await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+        except Exception as e:
+            logger.exception("_cmd_supervisor Fehler")
+            await update.message.reply_text(f"❌ Fehler: {e}", parse_mode="HTML")
+
     async def _cmd_holdings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Zeigt alle aktuell auf Kraken gehaltenen Coins mit Preis und EUR-Wert."""
         if not self._is_authorized(update):
@@ -630,6 +771,18 @@ class TelegramNewsBot:
         # rendite / rentabilität / performance
         if re.search(r'\brendite\b|\brentabilit\b|\bperformance\b|\bstats?\b|\bauswertung\b', text):
             await self._cmd_rendite(update, context)
+            return
+
+        # supervisor / erfahrung / lernverlauf
+        m = re.search(r'\bsupervisor\b|\berfahrung\b|\blernverlauf\b|\bregime.verlauf\b', text)
+        if m:
+            # Optionales Symbol extrahieren
+            sym_m = re.search(r'(btc|eth|xrp|snx|pepe|trump|ada)(?:[/\s]eur)?', text)
+            if sym_m:
+                context.args = [_normalize_symbol(sym_m.group(1))]
+            else:
+                context.args = []
+            await self._cmd_supervisor(update, context)
             return
 
         # holdings / bestände / was halte ich

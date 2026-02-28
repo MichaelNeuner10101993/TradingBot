@@ -111,6 +111,17 @@ def _write(
         db.set_state("supervisor_sim_pnl",         f"{best['pnl_pct']:+.2f}")
         db.set_state("supervisor_sim_trades",      str(best["num_trades"]))
         db.set_state("supervisor_last_update",     utcnow())
+        db.log_supervisor_cycle(
+            regime=regime,
+            adx=adx_val,
+            atr_pct=atr_pct,
+            strategy_name=best["name"],
+            fast=best["fast"],
+            slow=best["slow"],
+            sim_pnl=best["pnl_pct"],
+            num_trades=best["num_trades"],
+            source="own",
+        )
         db.close()
     except Exception as e:
         log.error(f"DB-Schreibfehler ({db_path}): {e}")
@@ -177,6 +188,17 @@ def _cross_bot_learning(results: dict, dry_run: bool):
                         db.set_state("supervisor_strategy_name", shared_name)
                         db.set_state("supervisor_sim_pnl",       f"{shared_pnl:+.2f}")
                         db.set_state("supervisor_sim_trades",    str(shared["num_trades"]))
+                        db.log_supervisor_cycle(
+                            regime=data["regime"],
+                            adx=-1,
+                            atr_pct=0.0,
+                            strategy_name=shared_name,
+                            fast=winner_data["best"]["fast"],
+                            slow=winner_data["best"]["slow"],
+                            sim_pnl=shared_pnl,
+                            num_trades=shared["num_trades"],
+                            source=f"cross:{winner_sym.split('/')[0]}",
+                        )
                         db.close()
                     except Exception as e:
                         log.error(f"Cross-Bot DB-Schreibfehler ({data['db_path']}): {e}")

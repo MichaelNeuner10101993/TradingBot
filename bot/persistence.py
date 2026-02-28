@@ -82,6 +82,23 @@ class StateDB:
         except sqlite3.OperationalError:
             pass  # Spalte existiert bereits
 
+        # Migration: supervisor_log (bestehende DBs)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS supervisor_log (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp     TEXT,
+                regime        TEXT,
+                adx           REAL,
+                atr_pct       REAL,
+                strategy_name TEXT,
+                fast          INTEGER,
+                slow          INTEGER,
+                sim_pnl       REAL,
+                num_trades    INTEGER,
+                source        TEXT     -- 'own' | 'cross:BTC' etc.
+            );
+        """)
+
     # --- Orders ---
 
     def upsert_order(self, client_id: str, data: dict):
@@ -212,6 +229,36 @@ class StateDB:
         )
         self.conn.commit()
         log.info(f"SL/TP manuell aktualisiert: client_id={client_id} SL={sl_price} TP={tp_price}")
+
+    # --- Supervisor Log ---
+
+    def log_supervisor_cycle(
+        self,
+        regime: str,
+        adx: float,
+        atr_pct: float,
+        strategy_name: str,
+        fast: int,
+        slow: int,
+        sim_pnl: float,
+        num_trades: int,
+        source: str = "own",
+    ):
+        """Speichert einen Supervisor-Durchlauf in supervisor_log (append-only)."""
+        self.conn.execute(
+            """INSERT INTO supervisor_log
+               (timestamp, regime, adx, atr_pct, strategy_name, fast, slow, sim_pnl, num_trades, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (utcnow(), regime, adx, atr_pct, strategy_name, fast, slow, sim_pnl, num_trades, source),
+        )
+        self.conn.commit()
+
+    def get_supervisor_log(self, limit: int = 20) -> list:
+        """Gibt die letzten `limit` Einträge aus supervisor_log zurück (neueste zuerst)."""
+        cur = self.conn.execute(
+            "SELECT * FROM supervisor_log ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in cur.fetchall()]
 
     # --- Bot State ---
 
