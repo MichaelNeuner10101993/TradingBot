@@ -102,6 +102,8 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("holdings",    self._cmd_holdings))
         self._app.add_handler(CommandHandler("rendite",     self._cmd_rendite))
         self._app.add_handler(CommandHandler("supervisor",  self._cmd_supervisor))
+        self._app.add_handler(CommandHandler("sentiment",   self._cmd_sentiment))
+        self._app.add_handler(CommandHandler("news",       self._cmd_news))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -131,6 +133,8 @@ class TelegramNewsBot:
             ("holdings",  "Alle gehaltenen Coins auf Kraken"),
             ("rendite",     "Detaillierte Rentabilität aller Bots"),
             ("supervisor",  "Supervisor-Erfahrung abrufen (z.B. /supervisor BTC/EUR)"),
+            ("sentiment",   "Sentiment-Trend der letzten 24h (z.B. /sentiment BTC/EUR)"),
+            ("news",        "Letzte News (z.B. /news BTC/EUR)"),
             ("help",        "Alle Befehle anzeigen"),
         ]
         try:
@@ -300,10 +304,17 @@ class TelegramNewsBot:
 
     async def _handle_start_bot(self, query, symbol: str, event_id: int):
         result = _call_start_api(self.cfg.web_api_base, symbol)
-        msg = (
-            f"▶ Bot *{_esc(symbol)}* gestartet\\.\n_5m \\| Fast 9 \\| Slow 21 \\| SL 3% \\| TP 6%_"
-            if result["ok"] else f"❌ Fehler: `{_esc(result['error'])}`"
-        )
+        if result["ok"]:
+            p    = result.get("params", {})
+            sl_s = f"{p.get('sl', 0.03)*100:.1f}%"
+            tp_s = f"{p.get('tp', 0.06)*100:.1f}%"
+            msg  = (
+                f"▶ Bot *{_esc(symbol)}* gestartet\\.\n"
+                f"_{_esc(p.get('timeframe', '5m'))} \\| Fast {p.get('fast', 9)} \\| "
+                f"Slow {p.get('slow', 21)} \\| SL {_esc(sl_s)} \\| TP {_esc(tp_s)}_"
+            )
+        else:
+            msg = f"❌ Fehler: `{_esc(result['error'])}`"
         self.db.execute(
             "INSERT INTO alert_history (news_event_id, action, acted_at) VALUES (?,?,?)",
             (event_id, f"started_bot:{symbol}", datetime.now(timezone.utc).isoformat()),
@@ -356,6 +367,8 @@ class TelegramNewsBot:
             "/rendite \\- Detaillierte Rentabilität \\(Win\\-Rate, P&L, Trades\\)\n"
             "/holdings \\- Alle gehaltenen Coins auf Kraken\n"
             "/supervisor \\- Supervisor\\-Erfahrung \\(Regime\\-Verlauf, Strategien\\)\n"
+            "/sentiment \\- Sentiment\\-Trend der letzten 24h \\(z\\.B\\. /sentiment BTC/EUR\\)\n"
+            "/news BTC/EUR \\- Letzte relevante News für einen Coin\n"
             "/params BTC/EUR \\- Parameter anzeigen\n\n"
             "▶ *Bot\\-Verwaltung*\n"
             "/start\\_bot BTC/EUR \\- Bot starten\n"
@@ -713,6 +726,169 @@ class TelegramNewsBot:
             logger.exception("_cmd_supervisor Fehler")
             await update.message.reply_text(f"❌ Fehler: {e}", parse_mode="HTML")
 
+    async def _cmd_sentiment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt den Sentiment-Trend der letzten 24h, optional gefiltert nach Symbol."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+
+        import re as _re
+        from datetime import timedelta
+
+        symbol_arg = " ".join(context.args).upper().strip() if context.args else None
+        if symbol_arg and "/" not in symbol_arg:
+            symbol_arg = symbol_arg + "/EUR"
+
+        now   = datetime.now(timezone.utc)
+        ago24 = (now - timedelta(hours=24)).isoformat()
+        ago4  = (now - timedelta(hours=4)).isoformat()
+
+        try:
+            # Alle Symbole oder gefiltert
+            if symbol_arg:
+                rows = self.db.execute(
+                    "SELECT symbol, AVG(score) as avg_score, COUNT(*) as cnt, MAX(timestamp) as last_ts "
+                    "FROM sentiment_scores WHERE timestamp >= ? AND symbol = ? "
+                    "GROUP BY symbol ORDER BY symbol",
+                    (ago24, symbol_arg),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    "SELECT symbol, AVG(score) as avg_score, COUNT(*) as cnt, MAX(timestamp) as last_ts "
+                    "FROM sentiment_scores WHERE timestamp >= ? "
+                    "GROUP BY symbol ORDER BY symbol",
+                    (ago24,),
+                ).fetchall()
+
+            if not rows:
+                msg = (
+                    f"ℹ️ Keine Sentiment\\-Daten für *{_esc(symbol_arg)}* in den letzten 24h\\."
+                    if symbol_arg else
+                    "ℹ️ Noch keine Sentiment\\-Daten in den letzten 24h\\."
+                )
+                await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            lines = ["📊 *Sentiment\\-Trend \\(letzte 24h\\)*\n"]
+
+            for row in rows:
+                symbol    = row["symbol"]
+                avg_score = row["avg_score"]
+                cnt       = row["cnt"]
+                label     = sent.score_to_label(avg_score, threshold=0.2)
+                emoji     = LABEL_EMOJI.get(label, "⚪")
+
+                # Trend-Pfeil: letzte 4h vs. 4-24h ago
+                recent = self.db.execute(
+                    "SELECT AVG(score) FROM sentiment_scores WHERE symbol=? AND timestamp >= ?",
+                    (symbol, ago4),
+                ).fetchone()[0]
+                older = self.db.execute(
+                    "SELECT AVG(score) FROM sentiment_scores WHERE symbol=? AND timestamp >= ? AND timestamp < ?",
+                    (symbol, ago24, ago4),
+                ).fetchone()[0]
+
+                if recent is not None and older is not None:
+                    diff = recent - older
+                    trend = "↑" if diff > 0.05 else ("↓" if diff < -0.05 else "→")
+                elif recent is not None:
+                    trend = "→"
+                else:
+                    trend = "–"
+
+                lines.append(
+                    f"{emoji} *{_esc(symbol)}* {trend} `{avg_score:+.2f}`  "
+                    f"\\({cnt} Artikel\\)  _{_esc(label)}_"
+                )
+
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+
+        except Exception as e:
+            logger.exception("_cmd_sentiment Fehler")
+            await update.message.reply_text(
+                f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    async def _cmd_news(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt letzte News aus news.db, optional nach Symbol gefiltert."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+
+        symbol_arg = " ".join(context.args).upper().strip() if context.args else None
+        if symbol_arg and "/" not in symbol_arg:
+            symbol_arg = symbol_arg + "/EUR"
+
+        now   = datetime.now(timezone.utc)
+        ago48 = (now - timedelta(hours=48)).isoformat()
+
+        try:
+            if symbol_arg:
+                rows = self.db.execute(
+                    "SELECT title, sentiment_score, sentiment_label, source, published_at "
+                    "FROM news_events "
+                    "WHERE fetched_at >= ? AND coins LIKE ? "
+                    "ORDER BY fetched_at DESC LIMIT 5",
+                    (ago48, f'%"{symbol_arg}"%'),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    "SELECT title, sentiment_score, sentiment_label, source, published_at "
+                    "FROM news_events "
+                    "WHERE fetched_at >= ? "
+                    "ORDER BY ABS(sentiment_score) DESC, fetched_at DESC LIMIT 10",
+                    (ago48,),
+                ).fetchall()
+
+            if not rows:
+                msg = (
+                    f"ℹ️ Keine News für *{_esc(symbol_arg)}* in den letzten 48h\\."
+                    if symbol_arg else
+                    "ℹ️ Keine News in den letzten 48h\\."
+                )
+                await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            header = (
+                f"📰 *News – {_esc(symbol_arg)} \\(letzte 48h\\)*\n"
+                if symbol_arg else
+                "📰 *Stärkste News \\(letzte 48h, alle Coins\\)*\n"
+            )
+            lines = [header]
+
+            for row in rows:
+                title  = row[0]
+                score  = row[1]
+                label  = row[2]
+                source = row[3]
+                pub_at = row[4]
+
+                emoji     = LABEL_EMOJI.get(label or "neutral", "⚪")
+                score_str = f"{score:+.2f}" if score is not None else "n/a"
+
+                try:
+                    pub_dt  = datetime.fromisoformat(pub_at.replace("Z", "+00:00"))
+                    age     = now - pub_dt
+                    if age < timedelta(hours=1):
+                        age_str = f"vor {int(age.total_seconds()/60)}min"
+                    elif age < timedelta(hours=24):
+                        age_str = f"vor {int(age.total_seconds()/3600)}h"
+                    else:
+                        age_str = f"vor {age.days}d"
+                except Exception:
+                    age_str = pub_at[:10] if pub_at else "?"
+
+                lines.append(
+                    f"{emoji} `{score_str}` · _{_esc(title[:120])}_\n"
+                    f"   {_esc(source or '?')} · {_esc(age_str)}\n"
+                )
+
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+
+        except Exception as e:
+            logger.exception("_cmd_news Fehler")
+            await update.message.reply_text(f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
     async def _cmd_holdings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Zeigt alle aktuell auf Kraken gehaltenen Coins mit Preis und EUR-Wert."""
         if not self._is_authorized(update):
@@ -777,13 +953,26 @@ class TelegramNewsBot:
         m = re.search(r'\bsupervisor\b|\berfahrung\b|\blernverlauf\b|\bregime.verlauf\b', text)
         if m:
             # Optionales Symbol extrahieren
-            sym_m = re.search(r'(btc|eth|xrp|snx|pepe|trump|ada)(?:[/\s]eur)?', text)
+            _coins = "|".join(k.split("/")[0].lower() for k in self.cfg.coin_keywords.keys())
+            sym_m  = re.search(rf'({_coins})(?:[/\s]eur)?', text)
             if sym_m:
                 context.args = [_normalize_symbol(sym_m.group(1))]
             else:
                 context.args = []
             await self._cmd_supervisor(update, context)
             return
+
+        # sentiment / stimmung / marktlage
+        m = re.search(r'\b(sentiment|stimmung|marktlage)\b\s*([A-Za-z]{2,6})?', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(2))] if m.group(2) else []
+            return await self._cmd_sentiment(update, context)
+
+        # news [symbol]
+        m = re.search(r'\bnews\b\s*([A-Za-z]{2,6})?', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1))] if m.group(1) else []
+            return await self._cmd_news(update, context)
 
         # holdings / bestände / was halte ich
         if re.search(r'\bholdings?\b|\bbestände?\b|\bbestand\b|\bwas halt', text):
@@ -869,8 +1058,13 @@ class TelegramNewsBot:
         await update.message.reply_text(f"▶ Starte {_esc(symbol)}…", parse_mode=ParseMode.MARKDOWN_V2)
         result = _call_start_api(self.cfg.web_api_base, symbol)
         if result["ok"]:
+            p    = result.get("params", {})
+            sl_s = f"{p.get('sl', 0.03)*100:.1f}%"
+            tp_s = f"{p.get('tp', 0.06)*100:.1f}%"
             await update.message.reply_text(
-                f"✅ *{_esc(symbol)}* gestartet\\.\n_5m \\| Fast 9 \\| Slow 21 \\| SL 3% \\| TP 6%_",
+                f"✅ *{_esc(symbol)}* gestartet\\.\n"
+                f"_{_esc(p.get('timeframe', '5m'))} \\| Fast {p.get('fast', 9)} \\| "
+                f"Slow {p.get('slow', 21)} \\| SL {_esc(sl_s)} \\| TP {_esc(tp_s)}_",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
         else:
@@ -1122,15 +1316,29 @@ def _get_running_symbols(base_url: str) -> set[str]:
 
 
 def _call_start_api(base_url: str, symbol: str) -> dict:
+    sl, tp, fast, slow, timeframe = 0.03, 0.06, 9, 21, "5m"
+    try:
+        bots = {b["symbol"]: b for b in requests.get(f"{base_url}/api/bots", timeout=5).json()}
+        if symbol in bots:
+            st        = bots[symbol].get("state", {})
+            sl        = float(st.get("sl_pct",       sl))
+            tp        = float(st.get("tp_pct",       tp))
+            fast      = int(float(st.get("fast_period", fast)))
+            slow      = int(float(st.get("slow_period", slow)))
+            timeframe = st.get("timeframe",           timeframe)
+    except Exception:
+        pass  # Fallback auf Defaults
+
     try:
         resp = requests.post(
             f"{base_url}/api/bot/start",
-            json={"symbol": symbol, "timeframe": "5m", "fast": 9, "slow": 21,
-                  "sl": 0.03, "tp": 0.06, "safety_buffer": 0.10},
+            json={"symbol": symbol, "timeframe": timeframe, "fast": fast, "slow": slow,
+                  "sl": sl, "tp": tp, "safety_buffer": 0.10},
             timeout=10,
         )
         resp.raise_for_status()
-        return {"ok": True, "symbol": symbol}
+        return {"ok": True, "symbol": symbol,
+                "params": {"sl": sl, "tp": tp, "fast": fast, "slow": slow, "timeframe": timeframe}}
     except Exception as e:
         return {"ok": False, "symbol": symbol, "error": str(e)}
 
