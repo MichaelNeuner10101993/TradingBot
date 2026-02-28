@@ -1,7 +1,7 @@
 [Unit]
 Description=TradingBot News-Agent (Krypto-Nachrichten + Telegram)
-After=network.target tradingbot-web.service
-Wants=tradingbot-web.service
+After=network-online.target tradingbot-web.service
+Wants=network-online.target tradingbot-web.service
 
 [Service]
 Type=simple

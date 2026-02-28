@@ -1,5 +1,5 @@
 [Unit]
-Description=Trading Bot Web Dashboard
+Description=Trading Bot Supervisor – Regime-Erkennung
 After=network.target
 PartOf=tradingbot.target
 
@@ -8,10 +8,12 @@ Type=simple
 User=DEIN_USER
 WorkingDirectory=DEIN_BOTDIR
 EnvironmentFile=DEIN_BOTDIR/.env
-ExecStart=DEIN_BOTDIR/botvenv/bin/python DEIN_BOTDIR/web/app.py
+ExecStart=DEIN_BOTDIR/botvenv/bin/python DEIN_BOTDIR/supervisor.py --interval 300
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 StandardOutput=journal
 StandardError=journal
+NoNewPrivileges=true
+
 [Install]
 WantedBy=tradingbot.target

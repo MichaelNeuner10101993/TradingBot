@@ -22,6 +22,89 @@ DB_DIR = os.environ.get("BOT_DB_DIR", os.path.join(PROJECT_ROOT, "db"))
 KRAKEN_FEE = 0.0026  # Taker-Fee pro Order (0.26%); Round-Trip = 2 × 0.26% = 0.52%
 
 _markets_cache: dict = {"data": None, "ts": 0.0}
+_eur_rate_cache: dict = {"data": {}, "ts": 0.0}  # Quote-Currency → EUR-Kurs
+_balance_cache:  dict = {"data": None, "ts": 0.0}  # Voller Kraken-Kontostand
+
+
+def _eur_rate(quote_currency: str) -> float:
+    """
+    Gibt den EUR-Wechselkurs für eine Quote-Currency zurück.
+    EUR → 1.0  |  USDT/USD → Kraken-Preis (5-Min-Cache).
+    Fallback: 1.0 wenn Rate nicht verfügbar.
+    """
+    import time
+    import ccxt as _ccxt
+    if quote_currency in ("EUR", ""):
+        return 1.0
+    now = time.time()
+    if now - _eur_rate_cache["ts"] < 300 and quote_currency in _eur_rate_cache["data"]:
+        return _eur_rate_cache["data"][quote_currency]
+    try:
+        ex = _ccxt.kraken({"enableRateLimit": True})
+        ticker = ex.fetch_ticker(f"{quote_currency}/EUR")
+        rate = float(ticker["last"] or 1.0)
+        _eur_rate_cache["data"][quote_currency] = rate
+        _eur_rate_cache["ts"] = now
+        return rate
+    except Exception:
+        return _eur_rate_cache["data"].get(quote_currency, 1.0)
+
+def _fetch_kraken_balance() -> dict:
+    """
+    Holt den echten Kraken-Kontostand inkl. aller Coins (5-Min-Cache).
+    Gibt {'eur_free', 'coins', 'coins_total_eur', 'total_eur'} zurück.
+    """
+    import time
+    now = time.time()
+    if _balance_cache["data"] is not None and now - _balance_cache["ts"] < 300:
+        return _balance_cache["data"]
+    try:
+        from bot.config import ExchangeConfig
+        from bot.data_feed import build_exchange
+        ex = build_exchange(ExchangeConfig())
+        raw = ex.fetch_balance()
+
+        _SKIP = {"info", "free", "used", "total", "datetime", "timestamp"}
+        eur_free = float((raw.get("EUR") or {}).get("free", 0) or 0)
+
+        non_eur: dict[str, float] = {}
+        for cur, amounts in raw.items():
+            if cur in _SKIP or cur == "EUR" or not isinstance(amounts, dict):
+                continue
+            amt = float(amounts.get("total", 0) or 0)
+            if amt > 0:
+                non_eur[cur] = amt
+
+        # Preise pro Coin in EUR holen (einzeln, mit Fehler-Toleranz)
+        coin_values: dict = {}
+        coins_total = 0.0
+        if non_eur:
+            for coin, amount in non_eur.items():
+                try:
+                    ticker = ex.fetch_ticker(f"{coin}/EUR")
+                    price  = float(ticker.get("last") or 0)
+                except Exception:
+                    price = 0.0  # kein EUR-Markt (z.B. REPV1, ETHW) → überspringen
+                value = amount * price
+                coins_total += value
+                coin_values[coin] = {
+                    "amount":    round(amount, 8),
+                    "price":     price,
+                    "value_eur": round(value, 2),
+                }
+
+        result = {
+            "eur_free":       round(eur_free, 2),
+            "coins":          coin_values,
+            "coins_total_eur": round(coins_total, 2),
+            "total_eur":      round(eur_free + coins_total, 2),
+        }
+        _balance_cache["data"] = result
+        _balance_cache["ts"]   = now
+        return result
+    except Exception as e:
+        return {"error": str(e), "eur_free": 0, "coins": {}, "coins_total_eur": 0, "total_eur": 0}
+
 
 PID_DIR = os.environ.get("BOT_PID_DIR", os.path.join(PROJECT_ROOT, "run"))
 LOG_DIR = os.environ.get("BOT_LOG_DIR", os.path.join(PROJECT_ROOT, "logs"))
@@ -182,7 +265,8 @@ def _load_bot(db_path: str) -> dict:
 
         balance_quote_float = float(state.get("balance_quote", 0) or 0)
         balance_base_float  = float(state.get("balance_base",  0) or 0)
-        coin_value_eur      = balance_base_float * last_price
+        rate_to_eur         = _eur_rate(quote)                          # 1.0 für EUR
+        coin_value_eur      = balance_base_float * last_price * rate_to_eur
 
         # Aggregate P&L für Card-Übersicht
         total_pnl_eur           = 0.0
@@ -211,6 +295,15 @@ def _load_bot(db_path: str) -> dict:
             except Exception:
                 pass
 
+        regime        = state.get("supervisor_regime", "–")
+        adx_val       = state.get("supervisor_adx", "–")
+        atr_pct       = state.get("supervisor_atr_pct", "–")
+        supv_update   = state.get("supervisor_last_update", "")
+        strategy_name = state.get("strategy_name", "Standard")
+        sim_pnl       = state.get("sim_pnl", "–")
+        fast_period   = state.get("fast_period", "9")
+        slow_period   = state.get("slow_period", "21")
+
         return {
             "symbol":        symbol,
             "base":          base,
@@ -220,6 +313,15 @@ def _load_bot(db_path: str) -> dict:
             "last_price_fmt": _price_fmt(last_price),
             "signal":        state.get("last_signal", "–"),
             "status":        state.get("status", "unknown"),
+            "regime":        regime,
+            "regime_adx":    adx_val,
+            "regime_atr_pct": atr_pct,
+            "regime_ago":    _time_ago(supv_update),
+            "strategy_name": strategy_name,
+            "sim_pnl":       sim_pnl,
+            "fast_period":   fast_period,
+            "slow_period":   slow_period,
+            "rate_to_eur":   rate_to_eur,
             "last_update":   state.get("last_update", ""),
             "ago":           _time_ago(state.get("last_update", "")),
             "dry_run":       state.get("dry_run") == "True",
@@ -250,28 +352,47 @@ def _load_bot(db_path: str) -> dict:
             "coin_value_eur": 0, "balance_quote_float": 0,
             "total_pnl_eur": 0, "total_expect_profit_eur": 0, "total_expect_loss_eur": 0,
             "process_running": False,
+            "regime": "–", "regime_adx": "–", "regime_atr_pct": "–", "regime_ago": "–",
+            "strategy_name": "Standard", "sim_pnl": "–", "fast_period": "9", "slow_period": "21",
+            "rate_to_eur": 1.0,
         }
 
 
+_SKIP_DBS = {"candles.db", "news.db"}
+
 def load_all_bots() -> list[dict]:
-    paths = sorted(glob(os.path.join(DB_DIR, "*.db")))
+    paths = sorted(
+        p for p in glob(os.path.join(DB_DIR, "*.db"))
+        if os.path.basename(p) not in _SKIP_DBS
+    )
     return [_load_bot(p) for p in paths]
 
 
 @app.route("/")
 def index():
     bots = load_all_bots()
-    active = [b for b in bots if not b.get("error")]
-    # EUR-Balance: aktuellster Bot (höchstes last_update)
-    sorted_active = sorted(active, key=lambda b: b.get("last_update", ""), reverse=True)
-    eur_balance = sorted_active[0]["balance_quote_float"] if sorted_active else 0.0
-    coin_total  = sum(b["coin_value_eur"] for b in active)
+    # Cache nutzen wenn vorhanden (kein blockierender API-Call beim Seitenaufbau)
+    # JS aktualisiert die Werte via /api/balance im Hintergrund
+    bal = _balance_cache["data"]
+    if bal and not bal.get("error"):
+        fiat_eur   = bal.get("eur_free", 0)
+        coin_total = bal.get("coins_total_eur", 0)
+    else:
+        # Fallback auf Bot-DBs wenn Cache leer (erster Start)
+        active = [b for b in bots if not b.get("error")]
+        seen: dict[str, float] = {}
+        for b in sorted(active, key=lambda b: b.get("last_update", ""), reverse=True):
+            q = b.get("quote", "EUR")
+            if q not in seen:
+                seen[q] = b["balance_quote_float"] * b.get("rate_to_eur", 1.0)
+        fiat_eur   = sum(seen.values())
+        coin_total = sum(b["coin_value_eur"] for b in active)
     return render_template(
         "index.html",
         bots=bots,
-        portfolio_eur=round(eur_balance, 2),
+        portfolio_eur=round(fiat_eur, 2),
         portfolio_coins=round(coin_total, 2),
-        portfolio_total=round(eur_balance + coin_total, 2),
+        portfolio_total=round(fiat_eur + coin_total, 2),
     )
 
 
@@ -332,6 +453,15 @@ def api_markets():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/balance")
+def api_balance():
+    """Echter Kraken-Kontostand: EUR + alle Coins (5-Min-Cache)."""
+    data = _fetch_kraken_balance()
+    if "error" in data:
+        return jsonify(data), 500
+    return jsonify(data)
+
+
 @app.route("/api/bot/start", methods=["POST"])
 def api_start_bot():
     try:
@@ -386,6 +516,9 @@ def api_delete_bot():
         symbol_safe = symbol.replace("/", "_")
 
         # 1. Prozess stoppen (best-effort, kein Fehler wenn nicht gefunden)
+        service  = f"tradingbot@{symbol_safe}.service"
+        subprocess.run(["sudo", "systemctl", "stop", service],
+                       capture_output=True, timeout=10)
         pid_file = os.path.join(PID_DIR, f"{symbol_safe}.pid")
         if os.path.exists(pid_file):
             try:
@@ -421,6 +554,69 @@ def api_delete_bot():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/bot/force_signal", methods=["POST"])
+def api_force_signal():
+    """Setzt ein Force-Signal (BUY/SELL) das der Bot im nächsten Loop einmalig ausführt."""
+    try:
+        data   = request.get_json(force=True)
+        symbol = data.get("symbol", "").strip().upper()
+        signal = data.get("signal", "").upper()
+        if signal not in ("BUY", "SELL"):
+            return jsonify({"ok": False, "error": "Signal muss BUY oder SELL sein"}), 400
+        symbol_safe = symbol.replace("/", "_")
+        db_path = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if not os.path.exists(db_path):
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol} gefunden"}), 404
+        db = StateDB(db_path)
+        db.set_state("force_signal", signal)
+        db.close()
+        return jsonify({"ok": True, "symbol": symbol, "signal": signal})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/bot/set_sltp_pct", methods=["POST"])
+def api_set_sltp_pct():
+    """Setzt SL/TP als Prozentsatz vom Entry-Preis aller offenen Trades eines Bots."""
+    try:
+        data       = request.get_json(force=True)
+        symbol     = data.get("symbol", "").strip().upper()
+        sl_pct     = data.get("sl_pct")   # z.B. 2.0 → 2%
+        tp_pct     = data.get("tp_pct")   # z.B. 4.0 → 4%
+        symbol_safe = symbol.replace("/", "_")
+        db_path    = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if not os.path.exists(db_path):
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol} gefunden"}), 404
+
+        db     = StateDB(db_path)
+        trades = db.get_open_trades(symbol)
+        if not trades:
+            db.close()
+            return jsonify({"ok": False, "error": "Kein offener Trade"}), 404
+
+        updated = 0
+        for t in trades:
+            entry = t.get("entry_price") or 0
+            if not entry:
+                continue
+            new_sl = float(t.get("sl_price") or 0)
+            new_tp = float(t.get("tp_price") or 0)
+            if sl_pct is not None:
+                new_sl = entry * (1 - float(sl_pct) / 100)
+            if tp_pct is not None:
+                new_tp = entry * (1 + float(tp_pct) / 100)
+            if new_sl <= 0 or new_tp <= 0 or new_sl >= new_tp:
+                db.close()
+                return jsonify({"ok": False, "error": f"Ungültige SL/TP-Werte (SL={new_sl:.4f} TP={new_tp:.4f})"}), 400
+            db.update_trade_sltp(t["client_id"], new_sl, new_tp)
+            updated += 1
+
+        db.close()
+        return jsonify({"ok": True, "symbol": symbol, "updated_trades": updated})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/bot/stop", methods=["POST"])
 def api_stop_bot():
     try:
@@ -432,7 +628,21 @@ def api_stop_bot():
         killed      = False
         tried       = []
 
-        # Stufe 1: PID-Datei (start_bots.sh)
+        # Stufe 1: systemctl (für systemd-verwaltete Bots)
+        service = f"tradingbot@{symbol_safe}.service"
+        try:
+            r = subprocess.run(
+                ["sudo", "systemctl", "stop", service],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                killed = True
+            else:
+                tried.append(f"systemctl: {r.stderr.strip() or 'kein Service'}")
+        except Exception as e:
+            tried.append(f"systemctl: {e}")
+
+        # Stufe 2: PID-Datei (für via Web-UI gestartete Bots)
         if os.path.exists(pid_file):
             try:
                 with open(pid_file) as f:
@@ -444,7 +654,7 @@ def api_stop_bot():
                     pass
                 killed = True
             except ProcessLookupError:
-                # Stale PID – Datei löschen, weiter zu Stufe 2
+                # Stale PID – Datei löschen, weiter zu Stufe 3
                 try:
                     os.remove(pid_file)
                 except OSError:
@@ -453,7 +663,7 @@ def api_stop_bot():
             except Exception as e:
                 tried.append(f"PID-Datei: {e}")
 
-        # Stufe 2: pgrep nach Symbol in Kommandozeile
+        # Stufe 3: pgrep nach Symbol in Kommandozeile
         if not killed and shutil.which("pgrep"):
             try:
                 r = subprocess.run(
@@ -472,7 +682,7 @@ def api_stop_bot():
             except Exception as e:
                 tried.append(f"pgrep: {e}")
 
-        # Stufe 3: pkill nach Symbol
+        # Stufe 4: pkill nach Symbol
         if not killed and shutil.which("pkill"):
             try:
                 r = subprocess.run(

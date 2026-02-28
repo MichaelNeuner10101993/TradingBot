@@ -8,3 +8,4 @@ textblob>=0.18.0
 python-telegram-bot>=21.0
 feedparser>=6.0.0
 requests>=2.31.0
+trafilatura>=1.6.0

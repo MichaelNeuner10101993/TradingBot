@@ -99,9 +99,10 @@ class CryptoPanicFetcher:
 class RSSFetcher:
     """Liest beliebige RSS/Atom-Feeds mit feedparser."""
 
-    def __init__(self, feed_urls: list[str], max_items: int = 50):
+    def __init__(self, feed_urls: list[str], max_items: int = 50, fetch_full_body: bool = False):
         self.feed_urls = feed_urls
         self.max_items = max_items
+        self.fetch_full_body = fetch_full_body
 
     def fetch(self) -> list[NewsItem]:
         items = []
@@ -118,6 +119,17 @@ class RSSFetcher:
 
                     if not link or not title:
                         continue
+
+                    # Volltext-Crawling via trafilatura (opt-in)
+                    if self.fetch_full_body and len(body) < 150 and link.startswith("http"):
+                        try:
+                            import trafilatura
+                            dl   = trafilatura.fetch_url(link)
+                            full = trafilatura.extract(dl) if dl else None
+                            if full and len(full) > len(body):
+                                body = full[:2000]
+                        except Exception:
+                            pass
 
                     items.append(NewsItem(
                         url=link,
@@ -244,6 +256,72 @@ class TwitterFetcher:
 
         logger.info("Twitter: %d Tweets geholt", len(items))
         return items
+
+
+# ---------------------------------------------------------------------------
+# Fear & Greed Index (Alternative.me, kostenlos)
+# ---------------------------------------------------------------------------
+
+class FearGreedFetcher:
+    """
+    Crypto Fear & Greed Index von alternative.me.
+    Kein API-Key nötig. Score 0-100 → normalisiert auf -1.0…+1.0.
+    """
+    SOURCE = "fear_greed"
+    URL    = "https://api.alternative.me/fng/?limit=1"
+
+    def fetch(self) -> list[NewsItem]:
+        try:
+            resp  = requests.get(self.URL, timeout=10)
+            resp.raise_for_status()
+            data  = resp.json()["data"][0]
+            value = int(data["value"])
+            label = data["value_classification"]
+            ts    = datetime.fromtimestamp(int(data["timestamp"]), tz=timezone.utc)
+            title = f"Crypto Fear & Greed Index: {value} ({label})"
+            url   = f"https://alternative.me/crypto/fear-and-greed-index/#{ts.date()}"
+            return [NewsItem(url=url, title=title, body="",
+                             source=self.SOURCE, published_at=ts, coins=[])]
+        except Exception as e:
+            logger.warning("FearGreed fetch fehlgeschlagen: %s", e)
+            return []
+
+
+# ---------------------------------------------------------------------------
+# CoinGecko Trending (kostenlos)
+# ---------------------------------------------------------------------------
+
+class CoinGeckoTrendingFetcher:
+    """
+    CoinGecko Trending Coins – Top 7 nach Suchvolumen.
+    Kein API-Key nötig. Frühindikator für Interesse-Wellen.
+    """
+    SOURCE = "coingecko"
+    URL    = "https://api.coingecko.com/api/v3/search/trending"
+
+    def fetch(self) -> list[NewsItem]:
+        try:
+            resp  = requests.get(self.URL, timeout=10,
+                                 headers={"Accept": "application/json"})
+            resp.raise_for_status()
+            coins = resp.json().get("coins", [])
+            now   = datetime.now(timezone.utc)
+            items = []
+            for rank, entry in enumerate(coins[:7], start=1):
+                d     = entry.get("item", {})
+                name  = d.get("name", "")
+                sym   = d.get("symbol", "").upper()
+                pct   = d.get("data", {}).get("price_change_percentage_24h", {}).get("usd")
+                pct_s = f" ({pct:+.1f}% 24h)" if pct is not None else ""
+                title = f"#{rank} Trending auf CoinGecko: {name} ({sym}){pct_s}"
+                url   = f"https://coingecko.com/trending#{sym.lower()}-{now.date()}"
+                items.append(NewsItem(url=url, title=title, body="",
+                                      source=self.SOURCE, published_at=now, coins=[]))
+            logger.info("CoinGecko Trending: %d Einträge geholt", len(items))
+            return items
+        except Exception as e:
+            logger.warning("CoinGecko Trending fetch fehlgeschlagen: %s", e)
+            return []
 
 
 # ---------------------------------------------------------------------------

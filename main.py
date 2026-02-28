@@ -8,6 +8,7 @@ Verwendung (eine Instanz pro Coin):
 """
 import argparse
 import random
+import signal as _signal
 import time
 import ccxt
 
@@ -20,7 +21,13 @@ from bot.strategy import get_signal
 from bot.risk import RiskManager
 from bot.execution import Executor
 from bot.persistence import StateDB, utcnow
-from bot.sl_tp import SlTpMonitor
+from bot.sl_tp import SlTpMonitor, calc_levels, update_trailing_sl
+from bot import pyramid, notify
+
+
+def _timeframe_to_seconds(tf: str) -> int:
+    _map = {"m": 60, "h": 3600, "d": 86400}
+    return int(tf[:-1]) * _map.get(tf[-1].lower(), 60)
 
 
 def parse_args():
@@ -36,11 +43,21 @@ def parse_args():
     p.add_argument("--live",          action="store_true", help="Setzt dry_run=False")
     p.add_argument("--db",            default=None, help="Pfad zur SQLite-DB")
     p.add_argument("--log-dir",       default=None, help="Log-Verzeichnis")
-    p.add_argument("--startup-delay", type=int, default=0, help="Sekunden warten vor erster API-Anfrage (API-Rate-Limit bei mehreren Bots staffeln)")
+    p.add_argument("--startup-delay",  type=int,   default=0,    help="Sekunden warten vor erster API-Anfrage (API-Rate-Limit bei mehreren Bots staffeln)")
+    p.add_argument("--trailing-sl",    action="store_true",       help="Trailing Stop-Loss aktivieren")
+    p.add_argument("--trailing-sl-pct", type=float, default=None, help="Trailing-SL-Abstand in Dezimal (z.B. 0.02 = 2%%)")
+    p.add_argument("--sl-cooldown",    type=int,   default=None,  help="Cooldown-Candles nach SL-Hit (default: 3)")
+    p.add_argument("--volume-filter",  action="store_true",       help="Volumen-Filter aktivieren")
+    p.add_argument("--volume-factor",  type=float, default=None,  help="Volumen-Faktor (default: 1.2)")
     return p.parse_args()
 
 
 def main():
+    # SIGTERM (von systemctl stop) → KeyboardInterrupt → finally-Block setzt status="stopped"
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
+
     args = parse_args()
 
     # --- Konfiguration (CLI überschreibt Defaults) ---
@@ -57,6 +74,15 @@ def main():
     if args.sl:        risk_cfg.stop_loss_pct   = args.sl
     if args.tp:        risk_cfg.take_profit_pct  = args.tp
     if args.safety_buffer is not None: risk_cfg.safety_buffer_pct = args.safety_buffer
+
+    # CLI-Feature-Flags (haben Vorrang vor Supervisor-Empfehlung)
+    _cli_trailing_set = args.trailing_sl
+    _cli_vol_set      = args.volume_filter
+    if args.trailing_sl:                    risk_cfg.use_trailing_sl    = True
+    if args.trailing_sl_pct is not None:    risk_cfg.trailing_sl_pct    = args.trailing_sl_pct
+    if args.sl_cooldown is not None:        risk_cfg.sl_cooldown_candles = args.sl_cooldown
+    if args.volume_filter:                  risk_cfg.volume_filter      = True
+    if args.volume_factor is not None:      risk_cfg.volume_factor      = args.volume_factor
 
     # DB-Verzeichnis für Bot-Zählung
     risk_cfg.db_dir = os.path.dirname(ops_cfg.db_path) or "db"
@@ -76,7 +102,9 @@ def main():
     log.info(
         f"Bot startet | symbol={bot_cfg.symbol} | tf={bot_cfg.timeframe} "
         f"| SMA {bot_cfg.fast_period}/{bot_cfg.slow_period} "
-        f"| SL={risk_cfg.stop_loss_pct*100:.1f}% TP={risk_cfg.take_profit_pct*100:.1f}% "
+        f"| RSI({risk_cfg.rsi_period}) buy<{risk_cfg.rsi_buy_max} sell>{risk_cfg.rsi_sell_min} "
+        f"| ATR({risk_cfg.atr_period}) SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult} "
+        f"| Fallback SL={risk_cfg.stop_loss_pct*100:.1f}% TP={risk_cfg.take_profit_pct*100:.1f}% "
         f"| dry_run={bot_cfg.dry_run} | db={ops_cfg.db_path}"
     )
 
@@ -97,15 +125,73 @@ def main():
                 balance     = feed.fetch_balance()
                 open_orders = feed.fetch_open_orders()
 
-                # 2) Signal berechnen
-                signal, last_price = get_signal(candles, bot_cfg.fast_period, bot_cfg.slow_period)
+                # 2) Supervisor-Anpassungen einlesen (falls Supervisor läuft)
+                _sv = db.get_all_state()
+                if _sv.get("supervisor_regime"):
+                    try:
+                        risk_cfg.rsi_buy_max  = float(_sv.get("supervisor_rsi_buy_max",  risk_cfg.rsi_buy_max))
+                        risk_cfg.rsi_sell_min = float(_sv.get("supervisor_rsi_sell_min", risk_cfg.rsi_sell_min))
+                        risk_cfg.atr_sl_mult  = float(_sv.get("supervisor_atr_sl_mult",  risk_cfg.atr_sl_mult))
+                        risk_cfg.atr_tp_mult  = float(_sv.get("supervisor_atr_tp_mult",  risk_cfg.atr_tp_mult))
+                        if _sv.get("supervisor_fast"):
+                            bot_cfg.fast_period = int(_sv.get("supervisor_fast", bot_cfg.fast_period))
+                            bot_cfg.slow_period = int(_sv.get("supervisor_slow", bot_cfg.slow_period))
+                        # Feature-Flags nur übernehmen wenn NICHT via CLI gesetzt
+                        if not _cli_trailing_set:
+                            sv_trail = _sv.get("supervisor_use_trailing_sl", "")
+                            if sv_trail.lower() in ("true", "false"):
+                                risk_cfg.use_trailing_sl = sv_trail.lower() == "true"
+                        if not _cli_vol_set:
+                            sv_vol = _sv.get("supervisor_volume_filter", "")
+                            if sv_vol.lower() in ("true", "false"):
+                                risk_cfg.volume_filter = sv_vol.lower() == "true"
+                        log.debug(
+                            f"Regime={_sv['supervisor_regime']} | "
+                            f"Strategie={_sv.get('supervisor_strategy_name','?')} "
+                            f"f={bot_cfg.fast_period}/s={bot_cfg.slow_period} | "
+                            f"RSI<{risk_cfg.rsi_buy_max} RSI>{risk_cfg.rsi_sell_min} | "
+                            f"SL×{risk_cfg.atr_sl_mult} TP×{risk_cfg.atr_tp_mult} | "
+                            f"trailing={risk_cfg.use_trailing_sl} vol={risk_cfg.volume_filter}"
+                        )
+                    except (ValueError, TypeError) as e:
+                        log.warning(f"Supervisor-State ungültig: {e}")
+
+                # 3) Signal berechnen (inkl. RSI- + Volumen-Filter)
+                signal, last_price, rsi_val = get_signal(
+                    candles,
+                    bot_cfg.fast_period,
+                    bot_cfg.slow_period,
+                    risk_cfg.rsi_period,
+                    risk_cfg.rsi_buy_max,
+                    risk_cfg.rsi_sell_min,
+                    volume_filter=risk_cfg.volume_filter,
+                    volume_factor=risk_cfg.volume_factor,
+                )
+                rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
+
+                # Force-Signal vom Telegram / Dashboard? (überschreibt berechnetes Signal)
+                _force = _sv.get("force_signal", "")
+                _is_forced = _force in ("BUY", "SELL")
+                if _is_forced:
+                    log.info(f"⚡ Force-Signal: {_force} (manuell gesetzt, überschreibt {signal})")
+                    signal = _force
+                    db.set_state("force_signal", "")  # einmalig verbrauchen
+
                 log.info(
-                    f"Signal={signal} | Preis={last_price:.4f} | "
+                    f"Signal={signal}{'⚡' if _is_forced else ''} | Preis={last_price:.4f} | RSI={rsi_str} | "
                     f"{balance['quote_currency']}={balance['quote']:.2f} "
                     f"{balance['base_currency']}={balance['base']:.6f}"
                 )
 
-                # 3) SL/TP prüfen (höchste Priorität)
+                # 3b) Trailing-SL-Update (SL folgt steigendem Kurs nach oben)
+                if risk_cfg.use_trailing_sl:
+                    for trade in db.get_open_trades(bot_cfg.symbol):
+                        new_sl = update_trailing_sl(trade, last_price, risk_cfg.trailing_sl_pct)
+                        if new_sl is not None:
+                            db.update_trade_sltp(trade["client_id"], new_sl, float(trade["tp_price"]))
+                            log.info(f"Trailing-SL: {float(trade['sl_price']):.6f} → {new_sl:.6f}")
+
+                # 4) SL/TP prüfen (höchste Priorität)
                 open_trades = db.get_open_trades(bot_cfg.symbol)
                 triggered   = sl_tp.check(last_price, open_trades)
                 for hit in triggered:
@@ -117,26 +203,78 @@ def main():
                         trade_client_id=trade["client_id"],
                         reason=reason,
                     )
+                    if reason == "sl_hit":
+                        db.set_state("last_sl_at", utcnow())
+                    exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
+                    pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
+                    notify.send_trade_sell(
+                        bot_cfg.symbol, float(trade["amount"]), exit_price,
+                        reason, pnl_eur, bot_cfg.dry_run,
+                    )
                 if triggered:
                     balance = feed.fetch_balance()
 
-                # 4) Guardrails
+                # 4b) Pyramid-Nachkauf prüfen (News + Profit → Nachkauf)
+                active_trades = db.get_open_trades(bot_cfg.symbol)
+                if active_trades and not triggered:
+                    trade   = active_trades[0]
+                    regime  = _sv.get("supervisor_regime", "")
+                    news_db = os.path.join(risk_cfg.db_dir, "news.db")
+                    ok_pyr, pyr_reason = pyramid.should_pyramid(
+                        trade, last_price, regime, news_db, bot_cfg.symbol
+                    )
+                    if ok_pyr:
+                        pyr_amount = risk.calc_buy_amount(balance, last_price, exchange) * pyramid.PYRAMID_SIZE_FRACTION
+                        log.info(f"🔺 Pyramid-Bedingung erfüllt ({pyr_reason}) – kaufe {pyr_amount:.6f}")
+                        pyr_order = executor.pyramid_buy(pyr_amount, last_price)
+                        if pyr_order:
+                            actual_price = pyr_order.get("average") or pyr_order.get("price") or last_price
+                            old_amount   = float(trade["amount"])
+                            new_amount   = old_amount + pyr_amount
+                            new_entry    = (trade["entry_price"] * old_amount + actual_price * pyr_amount) / new_amount
+                            new_sl, new_tp = calc_levels(new_entry, risk_cfg, candles)
+                            db.update_trade_pyramid(trade["client_id"], new_amount, new_entry, new_sl, new_tp)
+                            log.info(
+                                f"🔺 Pyramid-Kauf: +{pyr_amount:.6f} @ {actual_price:.4f} | "
+                                f"Avg-Entry={new_entry:.4f} SL={new_sl:.4f} TP={new_tp:.4f}"
+                            )
+                            notify.send_pyramid_buy(bot_cfg.symbol, pyr_amount, actual_price, new_entry, bot_cfg.dry_run)
+                            balance = feed.fetch_balance()
+                    else:
+                        log.debug(f"Pyramid nicht ausgelöst: {pyr_reason}")
+
+                # 5) Guardrails
                 ok, reason = risk.check_guardrails(open_orders, balance)
                 active_trades = db.get_open_trades(bot_cfg.symbol)
                 if active_trades:
-                    ok     = False
-                    reason = f"Offener Trade ({active_trades[0]['client_id'][:12]}…)"
+                    # Force-Sell darf trotz offenem Trade ausgeführt werden (schließt Position)
+                    if not (_is_forced and signal == "SELL"):
+                        ok     = False
+                        reason = f"Offener Trade ({active_trades[0]['client_id'][:12]}…)"
 
                 if not ok:
                     log.debug(f"Kein Trade: {reason}")
                 else:
-                    # 5) Order ausführen
+                    # 6) Order ausführen
+                    if signal == "BUY" and risk_cfg.sl_cooldown_candles > 0:
+                        last_sl_at = db.get_state("last_sl_at", "")
+                        if last_sl_at:
+                            elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(last_sl_at)).total_seconds()
+                            cooldown_sec = risk_cfg.sl_cooldown_candles * _timeframe_to_seconds(bot_cfg.timeframe)
+                            if elapsed < cooldown_sec:
+                                signal = "HOLD"
+                                log.info(f"SL-Cooldown aktiv: {int(cooldown_sec - elapsed)}s verbleibend")
+
                     if signal == "BUY":
-                        executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price)
+                        executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price, candles)
                     elif signal == "SELL":
                         executor.sell(risk.calc_sell_amount(balance), last_price)
+                        notify.send_trade_sell(
+                            bot_cfg.symbol, balance["base"], last_price,
+                            "signal_close", dry_run=bot_cfg.dry_run,
+                        )
 
-                # 6) Zustand für Web-Interface persistieren
+                # 7) Zustand für Web-Interface persistieren
                 db.set_state("symbol",         bot_cfg.symbol)
                 db.set_state("timeframe",      bot_cfg.timeframe)
                 db.set_state("dry_run",        str(bot_cfg.dry_run))
@@ -151,6 +289,12 @@ def main():
                 db.set_state("tp_pct",         str(risk_cfg.take_profit_pct))
                 db.set_state("fast_period",    str(bot_cfg.fast_period))
                 db.set_state("slow_period",    str(bot_cfg.slow_period))
+                db.set_state("rsi",            rsi_str)
+                db.set_state("regime",         _sv.get("supervisor_regime", "–"))
+                db.set_state("strategy_name",  _sv.get("supervisor_strategy_name", "Standard"))
+                db.set_state("sim_pnl",        _sv.get("supervisor_sim_pnl", "–"))
+                db.set_state("use_trailing_sl", str(risk_cfg.use_trailing_sl))
+                db.set_state("volume_filter",   str(risk_cfg.volume_filter))
                 db.set_state("status",         "running")
 
                 breaker.success()

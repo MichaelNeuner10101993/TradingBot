@@ -75,6 +75,40 @@ class StateDB:
         """)
         self.conn.commit()
 
+        # Migration: pyramid_count zu trades (bestehende DBs)
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN pyramid_count INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
+
+        # Migration: supervisor_log (bestehende DBs)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS supervisor_log (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp     TEXT,
+                regime        TEXT,
+                adx           REAL,
+                atr_pct       REAL,
+                strategy_name TEXT,
+                fast          INTEGER,
+                slow          INTEGER,
+                sim_pnl       REAL,
+                num_trades    INTEGER,
+                source        TEXT     -- 'own' | 'cross:BTC' etc.
+            );
+        """)
+        # Migration: neue Spalten in supervisor_log (bestehende DBs)
+        for col_def in [
+            "use_trailing_sl INTEGER DEFAULT 0",
+            "volume_filter   INTEGER DEFAULT 0",
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE supervisor_log ADD COLUMN {col_def}")
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Spalte existiert bereits
+
     # --- Orders ---
 
     def upsert_order(self, client_id: str, data: dict):
@@ -175,6 +209,28 @@ class StateDB:
         self.conn.commit()
         log.info(f"Trade geschlossen: client_id={client_id} reason={reason}")
 
+    def update_trade_pyramid(
+        self,
+        client_id: str,
+        new_amount: float,
+        new_entry: float,
+        new_sl: float,
+        new_tp: float,
+    ):
+        """Aktualisiert Trade nach Pyramid-Kauf (Menge, Avg-Entry, SL/TP, Zähler)."""
+        self.conn.execute(
+            """UPDATE trades
+               SET amount = ?, entry_price = ?, sl_price = ?, tp_price = ?,
+                   pyramid_count = pyramid_count + 1
+               WHERE client_id = ? AND status = 'open'""",
+            (new_amount, new_entry, new_sl, new_tp, client_id),
+        )
+        self.conn.commit()
+        log.info(
+            f"Pyramid-Trade aktualisiert: {client_id[:12]}… "
+            f"amount={new_amount:.6f} entry={new_entry:.4f} SL={new_sl:.4f} TP={new_tp:.4f}"
+        )
+
     def update_trade_sltp(self, client_id: str, sl_price: float, tp_price: float):
         """Aktualisiert SL/TP eines offenen Trades (manuell über Dashboard)."""
         self.conn.execute(
@@ -183,6 +239,40 @@ class StateDB:
         )
         self.conn.commit()
         log.info(f"SL/TP manuell aktualisiert: client_id={client_id} SL={sl_price} TP={tp_price}")
+
+    # --- Supervisor Log ---
+
+    def log_supervisor_cycle(
+        self,
+        regime: str,
+        adx: float,
+        atr_pct: float,
+        strategy_name: str,
+        fast: int,
+        slow: int,
+        sim_pnl: float,
+        num_trades: int,
+        source: str = "own",
+        use_trailing_sl: bool = False,
+        volume_filter: bool = False,
+    ):
+        """Speichert einen Supervisor-Durchlauf in supervisor_log (append-only)."""
+        self.conn.execute(
+            """INSERT INTO supervisor_log
+               (timestamp, regime, adx, atr_pct, strategy_name, fast, slow,
+                sim_pnl, num_trades, source, use_trailing_sl, volume_filter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (utcnow(), regime, adx, atr_pct, strategy_name, fast, slow,
+             sim_pnl, num_trades, source, int(use_trailing_sl), int(volume_filter)),
+        )
+        self.conn.commit()
+
+    def get_supervisor_log(self, limit: int = 20) -> list:
+        """Gibt die letzten `limit` Einträge aus supervisor_log zurück (neueste zuerst)."""
+        cur = self.conn.execute(
+            "SELECT * FROM supervisor_log ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in cur.fetchall()]
 
     # --- Bot State ---
 

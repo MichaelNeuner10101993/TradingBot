@@ -36,9 +36,25 @@ class RiskConfig:
     db_dir: str = "db"                   # Verzeichnis mit allen Bot-DBs (für Bot-Zählung)
     # Circuit Breaker: Bot stoppt nach N konsekutiven Fehlern
     max_consecutive_errors: int = 5
-    # Stop-Loss / Take-Profit – SNX ist volatiler, 2% SL wird durch normales Rauschen getriggert
+    # Stop-Loss / Take-Profit (Fallback wenn ATR nicht berechenbar)
     stop_loss_pct: float = 0.03          # 3% unter Entry → SL
-    take_profit_pct: float = 0.06        # 6% über Entry → TP  (2:1 R:R beibehalten)
+    take_profit_pct: float = 0.06        # 6% über Entry → TP
+    # RSI-Filter: verhindert Käufe bei Überkauft und Verkäufe bei Überverkauft
+    rsi_period: int = 14
+    rsi_buy_max: float = 65.0            # Kein BUY wenn RSI > 65
+    rsi_sell_min: float = 35.0           # Kein SELL wenn RSI < 35
+    # ATR-basiertes SL/TP (überschreibt stop_loss_pct / take_profit_pct)
+    atr_period: int = 14
+    atr_sl_mult: float = 1.5             # SL = entry - 1.5 × ATR
+    atr_tp_mult: float = 2.5             # TP = entry + 2.5 × ATR
+    # Trailing Stop-Loss: SL zieht mit steigendem Kurs nach oben
+    use_trailing_sl: bool = False
+    trailing_sl_pct: float = 0.02        # 2% Abstand unter aktuellem Kurs
+    # Cooldown nach SL-Hit: verhindert sofortigen Wiederkauf
+    sl_cooldown_candles: int = 3         # 3 Candles (= 15min bei 5m-Timeframe)
+    # Volumen-Filter: Signal nur bei überdurchschnittlichem Volumen
+    volume_filter: bool = False          # default aus (konservativ)
+    volume_factor: float = 1.2           # Crossover-Candle muss 1.2× Avg(20) haben
 
 
 @dataclass

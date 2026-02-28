@@ -10,7 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 from news.config import NewsAgentConfig
-from news.fetcher import CryptoPanicFetcher, RSSFetcher, GoogleNewsFetcher, TwitterFetcher, NewsItem
+from news.fetcher import (CryptoPanicFetcher, RSSFetcher, GoogleNewsFetcher,
+                           TwitterFetcher, FearGreedFetcher, CoinGeckoTrendingFetcher,
+                           NewsItem)
 from news import sentiment as sent
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,11 @@ CREATE TABLE IF NOT EXISTS alert_history (
     action          TEXT    DEFAULT 'sent',   -- 'sent' | 'dismissed' | 'stopped_bot'
     acted_at        TEXT    NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_news_fetched_at
+    ON news_events(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_ts
+    ON sentiment_scores(symbol, timestamp);
 """
 
 
@@ -105,16 +112,75 @@ def _is_relevant(item: NewsItem, cfg: NewsAgentConfig) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Deduplizierung
+# Deduplizierung & Altersfilter
 # ---------------------------------------------------------------------------
 
 def _already_seen(conn: sqlite3.Connection, url_hash: str, dedupe_hours: int) -> bool:
+    """URL-basierte Dedup: gleiche URL innerhalb von dedupe_hours."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=dedupe_hours)
     row = conn.execute(
         "SELECT id FROM news_events WHERE url_hash = ? AND fetched_at > ?",
         (url_hash, cutoff.isoformat()),
     ).fetchone()
     return row is not None
+
+
+def _is_too_old(item, max_age_hours: int) -> bool:
+    """Filtert Artikel deren published_at älter als max_age_hours ist."""
+    try:
+        age = datetime.now(timezone.utc) - item.published_at
+        return age.total_seconds() > max_age_hours * 3600
+    except Exception:
+        return False  # Im Zweifel durchlassen
+
+
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "has", "have", "had", "will", "would", "could", "should", "may", "might",
+    "it", "its", "this", "that", "as", "s", "not", "no", "new", "says", "say",
+}
+
+
+def _title_words(title: str) -> set[str]:
+    """Normalisiert einen Titel zu einer Menge signifikanter Wörter."""
+    import re
+    words = re.sub(r"[^\w\s]", "", title.lower()).split()
+    return {w for w in words if w not in _STOPWORDS and len(w) > 2}
+
+
+def _title_too_similar(
+    conn: sqlite3.Connection,
+    title: str,
+    hours: int,
+    threshold: float,
+) -> bool:
+    """
+    Semantische Dedup: gleiche Story von verschiedenen Outlets.
+    Jaccard-Ähnlichkeit der Titelwörter ≥ threshold → Duplikat.
+    Vergleicht gegen alle Einträge der letzten `hours` Stunden.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = conn.execute(
+        "SELECT title FROM news_events WHERE fetched_at > ?",
+        (cutoff.isoformat(),),
+    ).fetchall()
+
+    new_words = _title_words(title)
+    if not new_words:
+        return False
+
+    for (existing_title,) in rows:
+        ex_words = _title_words(existing_title)
+        if not ex_words:
+            continue
+        union = new_words | ex_words
+        if not union:
+            continue
+        similarity = len(new_words & ex_words) / len(union)
+        if similarity >= threshold:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +204,7 @@ class NewsAgent:
             RSSFetcher(
                 feed_urls=self.cfg.rss_feeds,
                 max_items=self.cfg.max_articles_per_run,
+                fetch_full_body=self.cfg.fetch_full_body,
             ),
             GoogleNewsFetcher(
                 queries=self.cfg.google_news_queries,
@@ -147,6 +214,8 @@ class NewsAgent:
                 bearer_token=self.cfg.twitter_bearer_token,
                 max_results=10,
             ),
+            FearGreedFetcher(),
+            CoinGeckoTrendingFetcher(),
         ]
 
     # ------------------------------------------------------------------
@@ -176,28 +245,62 @@ class NewsAgent:
 
         alerts_sent = 0
 
+        skipped_old = skipped_url = skipped_title = skipped_quality = skipped_irrelevant = 0
+
         for item in all_items:
-            # 2. Deduplizierung
+            # 2. Qualitätsfilter: Titel zu kurz (Reddit-Posts, Platzhalter etc.)
+            if len(item.title.split()) < self.cfg.min_title_words:
+                skipped_quality += 1
+                continue
+
+            # 3. Altersfilter
+            if _is_too_old(item, self.cfg.max_age_hours):
+                skipped_old += 1
+                continue
+
+            # 3. URL-Deduplizierung
             if _already_seen(self.conn, item.url_hash, self.cfg.dedupe_hours):
+                skipped_url += 1
                 continue
 
-            # 3. Relevanz-Filter + Coin-Matching
+            # 4. Semantische Titel-Deduplizierung (gleiche Story, andere Quelle)
+            if _title_too_similar(
+                self.conn, item.title,
+                self.cfg.title_dedupe_hours,
+                self.cfg.title_dedupe_threshold,
+            ):
+                skipped_title += 1
+                logger.debug("Titel-Duplikat übersprungen: %s", item.title[:60])
+                continue
+
+            # 5. Relevanz-Filter + Coin-Matching
             coins = _match_coins(item, self.cfg)
-            item.coins = coins  # Aktualisieren mit gematchten Coins
+            item.coins = coins
             if not _is_relevant(item, self.cfg):
+                skipped_irrelevant += 1
                 continue
 
-            # 4. Sentiment-Score berechnen
+            # 6. Sentiment-Score berechnen
             result = sent.combined_score(item.text)
             score = result["score"]
             label = result["label"]
+
+            # Fear & Greed: direkter Score-Override (VADER interpretiert den Titel falsch)
+            if item.source == "fear_greed":
+                import re as _re
+                m = _re.search(r"Index: (\d+)", item.title)
+                if m:
+                    raw_val = int(m.group(1))
+                    score   = round((raw_val - 50) / 50, 3)
+                    label   = sent.score_to_label(score, threshold=0.2)
+                    result  = {"score": score, "label": label, "vader": score, "textblob": score}
 
             logger.debug(
                 "[%s] %s | score=%.3f | coins=%s",
                 label.upper(), item.title[:60], score, coins or "allgemein"
             )
 
-            # 5. In DB speichern
+            # 7. In DB speichern
             import json
             now_iso = datetime.now(timezone.utc).isoformat()
             try:
@@ -227,7 +330,7 @@ class NewsAgent:
                 )
             self.conn.commit()
 
-            # 6. Alert auslösen wenn Score über Schwelle
+            # 8. Alert auslösen wenn Score über Schwelle
             if abs(score) >= self.cfg.sentiment_threshold:
                 event_id = self.conn.execute(
                     "SELECT id FROM news_events WHERE url_hash = ?", (item.url_hash,)
@@ -238,6 +341,7 @@ class NewsAgent:
                         "[DRY-RUN] Alert: [%s] %.3f | %s | %s",
                         label.upper(), score, coins or "allgemein", item.title[:80]
                     )
+                    alerts_sent += 1
                 elif self.telegram:
                     try:
                         self.telegram.send_alert(item, score, label, coins, event_id)
@@ -249,7 +353,12 @@ class NewsAgent:
                     except Exception as e:
                         logger.error("Telegram Alert fehlgeschlagen: %s", e)
 
-        logger.info("Fetch-Cycle abgeschlossen. Alerts gesendet: %d", alerts_sent)
+        logger.info(
+            "Fetch-Cycle abgeschlossen | gefetcht=%d | qualität=%d | alt=%d | url-dup=%d | "
+            "titel-dup=%d | irrelevant=%d | alerts=%d",
+            len(all_items), skipped_quality, skipped_old, skipped_url,
+            skipped_title, skipped_irrelevant, alerts_sent,
+        )
         return alerts_sent
 
     # ------------------------------------------------------------------

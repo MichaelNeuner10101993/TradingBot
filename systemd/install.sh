@@ -53,6 +53,7 @@ for bot in "${BOTS[@]}"; do
 done
 
 sudo systemctl enable tradingbot-web.service
+sudo systemctl enable tradingbot-supervisor.service
 sudo systemctl enable tradingbot.target
 sudo systemctl enable news-agent.service
 
@@ -66,3 +67,5 @@ echo "Logs Bot:      journalctl -u tradingbot@SNX_EUR -f"
 echo "Logs Web:      journalctl -u tradingbot-web -f"
 echo "News-Agent:    sudo systemctl start news-agent"
 echo "Logs News:     journalctl -u news-agent -f"
+echo "Supervisor:    sudo systemctl start tradingbot-supervisor"
+echo "Logs Supv:     journalctl -u tradingbot-supervisor -f"

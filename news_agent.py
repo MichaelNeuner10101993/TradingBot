@@ -34,6 +34,9 @@ def _setup_logging(cfg: NewsAgentConfig):
         logging.FileHandler(log_file, encoding="utf-8"),
     ]
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
+    # Token-URLs nicht ins Journal loggen
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def main():
