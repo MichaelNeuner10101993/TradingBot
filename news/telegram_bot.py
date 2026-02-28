@@ -26,7 +26,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 
 from news.config import NewsAgentConfig
@@ -99,9 +99,13 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("set_sl",    self._cmd_set_sl))
         self._app.add_handler(CommandHandler("set_tp",    self._cmd_set_tp))
         self._app.add_handler(CommandHandler("params",    self._cmd_params))
+        self._app.add_handler(CommandHandler("holdings",  self._cmd_holdings))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
+
+        # Freitext-Handler (nach allen Command-Handlern registrieren)
+        self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._cmd_natural_language))
 
         # Commands bei Telegram registrieren (erscheinen als Vorschläge wenn man / tippt)
         self._register_commands()
@@ -122,6 +126,7 @@ class TelegramNewsBot:
             ("sell",      "Force-Verkauf (z.B. /sell BTC/EUR)"),
             ("set_sl",    "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
             ("set_tp",    "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
+            ("holdings",  "Alle gehaltenen Coins auf Kraken"),
             ("help",      "Alle Befehle anzeigen"),
         ]
         try:
@@ -344,6 +349,7 @@ class TelegramNewsBot:
             "📊 *Übersicht*\n"
             "/status \\- Status aller Bots \\(inkl\\. Balance\\)\n"
             "/portfolio \\- Offene Positionen \\+ P&L\n"
+            "/holdings \\- Alle gehaltenen Coins auf Kraken\n"
             "/params BTC/EUR \\- Parameter anzeigen\n\n"
             "▶ *Bot\\-Verwaltung*\n"
             "/start\\_bot BTC/EUR \\- Bot starten\n"
@@ -369,19 +375,27 @@ class TelegramNewsBot:
                 await update.message.reply_text("ℹ️ Keine Bots konfiguriert\\.", parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            # Balance aggregieren (gleiche Logik wie web/app.py)
-            seen_quotes: dict = {}
-            coin_total = 0.0
-            for b in sorted(bots, key=lambda x: x.get("last_update", ""), reverse=True):
-                if b.get("error"):
-                    continue
-                q    = b.get("quote", "EUR")
-                rate = float(b.get("rate_to_eur", 1.0))
-                if q not in seen_quotes:
-                    seen_quotes[q] = float(b.get("balance_quote_float", 0)) * rate
-                coin_total += float(b.get("coin_value_eur", 0))
-            fiat_eur  = sum(seen_quotes.values())
-            total_eur = fiat_eur + coin_total
+            # Echte Kraken-Balance holen (alle Coins, nicht nur bot-verwaltete)
+            try:
+                bal_resp  = requests.get(f"{self.cfg.web_api_base}/api/balance", timeout=15)
+                bal_data  = bal_resp.json()
+                fiat_eur  = float(bal_data.get("eur_free", 0))
+                coin_total = float(bal_data.get("coins_total_eur", 0))
+                total_eur  = float(bal_data.get("total_eur", 0))
+            except Exception:
+                # Fallback: aus Bot-DBs aggregieren
+                seen_quotes: dict = {}
+                coin_total = 0.0
+                for b in sorted(bots, key=lambda x: x.get("last_update", ""), reverse=True):
+                    if b.get("error"):
+                        continue
+                    q    = b.get("quote", "EUR")
+                    rate = float(b.get("rate_to_eur", 1.0))
+                    if q not in seen_quotes:
+                        seen_quotes[q] = float(b.get("balance_quote_float", 0)) * rate
+                    coin_total += float(b.get("coin_value_eur", 0))
+                fiat_eur  = sum(seen_quotes.values())
+                total_eur = fiat_eur + coin_total
 
             lines = [
                 "📊 *Bot\\-Status:*\n",
@@ -471,6 +485,132 @@ class TelegramNewsBot:
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def _cmd_holdings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Zeigt alle aktuell auf Kraken gehaltenen Coins mit Preis und EUR-Wert."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/balance", timeout=15)
+            data = resp.json()
+            if "error" in data:
+                await update.message.reply_text(f"❌ Fehler: `{_esc(data['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            eur_free   = float(data.get("eur_free", 0))
+            coins      = data.get("coins", {})
+            coin_total = float(data.get("coins_total_eur", 0))
+            total      = float(data.get("total_eur", 0))
+
+            lines = ["💼 *Holdings \\(Kraken\\):*\n"]
+            lines.append(f"💶 EUR:  `{eur_free:.2f} EUR`\n")
+
+            # Coins nach EUR-Wert sortiert
+            for coin, d in sorted(coins.items(), key=lambda x: -x[1]["value_eur"]):
+                amount    = d["amount"]
+                price     = d["price"]
+                value_eur = d["value_eur"]
+                if value_eur > 0 or amount > 0:
+                    price_str = _fmt_p(price) if price else "kein Markt"
+                    lines.append(
+                        f"🔸 *{_esc(coin)}:* `{amount:.6g}` × `{_esc(price_str)}` \\= `{value_eur:.2f} EUR`"
+                    )
+
+            lines.append(f"\n📊 Coins gesamt: `{coin_total:.2f} EUR`")
+            lines.append(f"💰 *Gesamt: `{total:.2f} EUR`*")
+
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def _cmd_natural_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Versteht Freitext wie 'status', 'stoppe BTC', 'kauf ETH', 'holdings' etc."""
+        if not self._is_authorized(update):
+            return
+        import re
+        text = (update.message.text or "").strip().lower()
+
+        # status / bots
+        if re.search(r'\bstatus\b|\bbots?\b', text):
+            await self._cmd_status(update, context)
+            return
+
+        # portfolio / positionen
+        if re.search(r'\bportfolio\b|\bpositionen?\b|\bposition\b', text):
+            await self._cmd_portfolio(update, context)
+            return
+
+        # holdings / bestände / was halte ich
+        if re.search(r'\bholdings?\b|\bbestände?\b|\bbestand\b|\bwas halt', text):
+            await self._cmd_holdings(update, context)
+            return
+
+        # hilfe
+        if re.search(r'\bhilfe\b|\bhelp\b|\bbefehle?\b', text):
+            await self._cmd_help(update, context)
+            return
+
+        # stop all
+        if re.search(r'\bstop(?:pe)?\s+all(?:e)?\b|\balle\s+stopp?en\b|\bnotfall\b', text):
+            await self._cmd_stop_all(update, context)
+            return
+
+        # stop <symbol>
+        m = re.search(r'\bstop(?:pe)?\s+([\w/]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1))]
+            await self._cmd_stop_bot(update, context)
+            return
+
+        # start <symbol>
+        m = re.search(r'\bstart(?:e)?\s+([\w/]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1))]
+            await self._cmd_start_bot(update, context)
+            return
+
+        # kauf / buy <symbol>
+        m = re.search(r'\b(?:kauf(?:e)?|buy)\s+([\w/]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1))]
+            await self._cmd_buy(update, context)
+            return
+
+        # verkauf / sell <symbol>
+        m = re.search(r'\b(?:verk(?:auf(?:e)?)?|sell)\s+([\w/]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1))]
+            await self._cmd_sell(update, context)
+            return
+
+        # params / parameter <symbol>
+        m = re.search(r'\bparams?\s+([\w/]+)|\bparameter\s+([\w/]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1) or m.group(2))]
+            await self._cmd_params(update, context)
+            return
+
+        # sl setzen: "sl btc 2" oder "stop loss btc 2.5"
+        m = re.search(r'\b(?:sl|stop\s*loss)\s+([\w/]+)\s+([\d.]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1)), m.group(2)]
+            await self._cmd_set_sl(update, context)
+            return
+
+        # tp setzen: "tp btc 4" oder "take profit btc 4.0"
+        m = re.search(r'\b(?:tp|take\s*profit)\s+([\w/]+)\s+([\d.]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1)), m.group(2)]
+            await self._cmd_set_tp(update, context)
+            return
+
+        await update.message.reply_text(
+            "❓ Nicht verstanden\\.\n\n"
+            "Beispiele: _status_ · _holdings_ · _portfolio_ · "
+            "_stoppe BTC_ · _starte ETH_ · _kauf BTC_ · _sl BTC 2_ · _hilfe_",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
 
     async def _cmd_start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -797,6 +937,14 @@ def _fmt_p(price: float) -> str:
     if price >= 0.01:
         return f"{price:.6f}"
     return f"{price:.8f}"
+
+
+def _normalize_symbol(s: str) -> str:
+    """btc → BTC/EUR, btc/eur → BTC/EUR"""
+    s = s.upper()
+    if "/" not in s:
+        s = f"{s}/EUR"
+    return s
 
 
 def _call_set_sltp_pct(

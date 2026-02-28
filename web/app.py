@@ -23,6 +23,7 @@ KRAKEN_FEE = 0.0026  # Taker-Fee pro Order (0.26%); Round-Trip = 2 × 0.26% = 0.
 
 _markets_cache: dict = {"data": None, "ts": 0.0}
 _eur_rate_cache: dict = {"data": {}, "ts": 0.0}  # Quote-Currency → EUR-Kurs
+_balance_cache:  dict = {"data": None, "ts": 0.0}  # Voller Kraken-Kontostand
 
 
 def _eur_rate(quote_currency: str) -> float:
@@ -47,6 +48,63 @@ def _eur_rate(quote_currency: str) -> float:
         return rate
     except Exception:
         return _eur_rate_cache["data"].get(quote_currency, 1.0)
+
+def _fetch_kraken_balance() -> dict:
+    """
+    Holt den echten Kraken-Kontostand inkl. aller Coins (5-Min-Cache).
+    Gibt {'eur_free', 'coins', 'coins_total_eur', 'total_eur'} zurück.
+    """
+    import time
+    now = time.time()
+    if _balance_cache["data"] is not None and now - _balance_cache["ts"] < 300:
+        return _balance_cache["data"]
+    try:
+        from bot.config import ExchangeConfig
+        from bot.data_feed import build_exchange
+        ex = build_exchange(ExchangeConfig())
+        raw = ex.fetch_balance()
+
+        _SKIP = {"info", "free", "used", "total", "datetime", "timestamp"}
+        eur_free = float((raw.get("EUR") or {}).get("free", 0) or 0)
+
+        non_eur: dict[str, float] = {}
+        for cur, amounts in raw.items():
+            if cur in _SKIP or cur == "EUR" or not isinstance(amounts, dict):
+                continue
+            amt = float(amounts.get("total", 0) or 0)
+            if amt > 0:
+                non_eur[cur] = amt
+
+        # Preise pro Coin in EUR holen (einzeln, mit Fehler-Toleranz)
+        coin_values: dict = {}
+        coins_total = 0.0
+        if non_eur:
+            for coin, amount in non_eur.items():
+                try:
+                    ticker = ex.fetch_ticker(f"{coin}/EUR")
+                    price  = float(ticker.get("last") or 0)
+                except Exception:
+                    price = 0.0  # kein EUR-Markt (z.B. REPV1, ETHW) → überspringen
+                value = amount * price
+                coins_total += value
+                coin_values[coin] = {
+                    "amount":    round(amount, 8),
+                    "price":     price,
+                    "value_eur": round(value, 2),
+                }
+
+        result = {
+            "eur_free":       round(eur_free, 2),
+            "coins":          coin_values,
+            "coins_total_eur": round(coins_total, 2),
+            "total_eur":      round(eur_free + coins_total, 2),
+        }
+        _balance_cache["data"] = result
+        _balance_cache["ts"]   = now
+        return result
+    except Exception as e:
+        return {"error": str(e), "eur_free": 0, "coins": {}, "coins_total_eur": 0, "total_eur": 0}
+
 
 PID_DIR = os.environ.get("BOT_PID_DIR", os.path.join(PROJECT_ROOT, "run"))
 LOG_DIR = os.environ.get("BOT_LOG_DIR", os.path.join(PROJECT_ROOT, "logs"))
@@ -313,25 +371,13 @@ def load_all_bots() -> list[dict]:
 @app.route("/")
 def index():
     bots = load_all_bots()
-    active = [b for b in bots if not b.get("error")]
-
-    # Quote-Balance pro Currency in EUR umrechnen (Pool-bewusst)
-    # Jeweils nur den aktuellsten Bot pro Quote-Currency als Fiat-Quelle nehmen
-    seen_quotes: dict[str, float] = {}
-    for b in sorted(active, key=lambda b: b.get("last_update", ""), reverse=True):
-        q = b.get("quote", "EUR")
-        if q not in seen_quotes:
-            seen_quotes[q] = b["balance_quote_float"] * b.get("rate_to_eur", 1.0)
-
-    fiat_eur   = sum(seen_quotes.values())
-    coin_total = sum(b["coin_value_eur"] for b in active)
-
+    bal  = _fetch_kraken_balance()
     return render_template(
         "index.html",
         bots=bots,
-        portfolio_eur=round(fiat_eur, 2),
-        portfolio_coins=round(coin_total, 2),
-        portfolio_total=round(fiat_eur + coin_total, 2),
+        portfolio_eur=bal.get("eur_free", 0),
+        portfolio_coins=bal.get("coins_total_eur", 0),
+        portfolio_total=bal.get("total_eur", 0),
     )
 
 
@@ -390,6 +436,15 @@ def api_markets():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/balance")
+def api_balance():
+    """Echter Kraken-Kontostand: EUR + alle Coins (5-Min-Cache)."""
+    data = _fetch_kraken_balance()
+    if "error" in data:
+        return jsonify(data), 500
+    return jsonify(data)
 
 
 @app.route("/api/bot/start", methods=["POST"])
