@@ -314,6 +314,23 @@
     details[open].adv-settings > summary::before { content: "▼ "; font-size: 9px; }
     .feat-cb { display: flex; align-items: center; gap: 5px; cursor: pointer; color: #c9d1d9; }
     .feat-cb input[type=checkbox] { margin: 0; accent-color: #3fb950; }
+    /* ── Hilfe-Tooltips ─────────────────────────────────── */
+    .tip {
+      position: relative; display: inline-block;
+      color: #58a6ff; cursor: help; font-size: 10px; margin-left: 3px;
+      font-style: normal; font-weight: bold; line-height: 1;
+    }
+    .tip::after {
+      content: attr(data-tip);
+      position: absolute; z-index: 9999;
+      bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      min-width: 210px; max-width: 270px;
+      background: #161b22; border: 1px solid #3d444d;
+      color: #c9d1d9; padding: 8px 10px; border-radius: 6px;
+      font-size: 11px; line-height: 1.5; white-space: normal;
+      pointer-events: none; opacity: 0; transition: opacity .15s;
+    }
+    .tip:hover::after { opacity: 1; }
 
     /* ── Market-Suche Dropdown ──────────────────────────── */
     .market-wrap { position: relative; }
@@ -755,7 +772,7 @@
     </label>
   </div>
   <div class="form-row">
-    <label>Timeframe
+    <label>Timeframe <span class="tip" data-tip="Kerzen-Größe für Signale. 5m = alle 5 Min eine Entscheidung. Kleiner = mehr Trades &amp; mehr Fehler. Größer = ruhiger &amp; verlässlicher.">ⓘ</span>
       <select id="nb-tf">
         <option value="1m">1m</option>
         <option value="3m">3m</option>
@@ -764,23 +781,23 @@
         <option value="1h">1h</option>
       </select>
     </label>
-    <label>Safety Buffer %
+    <label>Safety Buffer % <span class="tip" data-tip="Reserve die NIE investiert wird. 10% = von 1.000 € werden max. 900 € eingesetzt. Schutz falls mehrere Bots gleichzeitig kaufen.">ⓘ</span>
       <input id="nb-buf" type="number" value="10" min="0" max="50" step="1">
     </label>
   </div>
   <div class="form-row">
-    <label>Fast MA
+    <label>Fast MA <span class="tip" data-tip="Schneller Durchschnitt (Standard: 9). Kleiner = reagiert früher, macht mehr Fehler. Empfehlung: ¼ bis ½ des Slow MA.">ⓘ</span>
       <input id="nb-fast" type="number" value="9" min="2" max="200">
     </label>
-    <label>Slow MA
+    <label>Slow MA <span class="tip" data-tip="Langsamer Durchschnitt (Standard: 21). Fast MA kreuzt ihn von unten = Kaufsignal. Von oben = Verkauf.">ⓘ</span>
       <input id="nb-slow" type="number" value="21" min="3" max="500">
     </label>
   </div>
   <div class="form-row">
-    <label>Stop-Loss %
+    <label>Stop-Loss % <span class="tip" data-tip="Max. Verlust pro Trade. 3% = Kauf 100 € → Verkauf bei 97 €. Kleiner = sicherer, aber wird öfter ausgelöst. Nur Fallback – normalerweise berechnet ATR den SL.">ⓘ</span>
       <input id="nb-sl" type="number" value="3" min="0.1" max="50" step="0.1">
     </label>
-    <label>Take-Profit %
+    <label>Take-Profit % <span class="tip" data-tip="Gewinnziel. 6% = Kauf 100 € → Verkauf bei 106 €. Empfehlung: mind. 2× so groß wie der SL (Chance:Risiko ≥ 2:1).">ⓘ</span>
       <input id="nb-tp" type="number" value="6" min="0.1" max="100" step="0.1">
     </label>
   </div>
@@ -795,31 +812,31 @@
 
     <div class="form-row">
       <label>
-        <span class="feat-cb"><input type="checkbox" id="nb-trailing" onchange="nbToggle('nb-trailing-pct',this.checked)"> Trailing-SL</span>
-        <input id="nb-trailing-pct" type="number" value="2" min="0.1" max="20" step="0.1" disabled style="opacity:.4" title="Abstand % (default: 2%)">
+        <span class="feat-cb"><input type="checkbox" id="nb-trailing" onchange="nbToggle('nb-trailing-pct',this.checked)"> Trailing-SL <span class="tip" data-tip="SL folgt dem Kurs automatisch nach oben – nie nach unten. Bei 2%: Kurs steigt auf 110 € → SL wandert auf 107,80 €. Sichert wachsende Gewinne.">ⓘ</span></span>
+        <input id="nb-trailing-pct" type="number" value="2" min="0.1" max="20" step="0.1" disabled style="opacity:.4" title="Abstand % – 2% = SL bleibt 2% unter dem bisher höchsten Kurs">
       </label>
-      <label>SL-Cooldown (Candles)
+      <label>SL-Cooldown (Candles) <span class="tip" data-tip="Pause nach einem Verlust. 3 Candles × 5m = 15 Min warten. Verhindert sofortigen Wiederkauf in weiter fallenden Markt.">ⓘ</span>
         <input id="nb-cooldown" type="number" value="3" min="0" max="20">
       </label>
     </div>
 
     <div class="form-row">
       <label>
-        <span class="feat-cb"><input type="checkbox" id="nb-volume" onchange="nbToggle('nb-volume-factor',this.checked)"> Volumen-Filter</span>
-        <input id="nb-volume-factor" type="number" value="1.2" min="1" max="5" step="0.1" disabled style="opacity:.4" title="Faktor (default: 1.2)">
+        <span class="feat-cb"><input type="checkbox" id="nb-volume" onchange="nbToggle('nb-volume-factor',this.checked)"> Volumen-Filter <span class="tip" data-tip="Kauft nur bei erhöhtem Handelsvolumen. Filtert Fehlsignale in ruhigen Marktphasen heraus.">ⓘ</span></span>
+        <input id="nb-volume-factor" type="number" value="1.2" min="1" max="5" step="0.1" disabled style="opacity:.4" title="Faktor – 1.2 = Volumen muss 20% über Durchschnitt liegen. 2.0 = doppeltes Volumen nötig.">
       </label>
       <label>
-        <span class="feat-cb"><input type="checkbox" id="nb-breakeven" onchange="nbToggle('nb-breakeven-pct',this.checked)"> Breakeven-SL</span>
-        <input id="nb-breakeven-pct" type="number" value="1" min="0.1" max="10" step="0.1" disabled style="opacity:.4" title="Trigger % (default: 1%)">
+        <span class="feat-cb"><input type="checkbox" id="nb-breakeven" onchange="nbToggle('nb-breakeven-pct',this.checked)"> Breakeven-SL <span class="tip" data-tip="Nach X% Gewinn springt der SL auf den Kaufpreis. Danach: im schlimmsten Fall ±0, kein Verlust mehr möglich.">ⓘ</span></span>
+        <input id="nb-breakeven-pct" type="number" value="1" min="0.1" max="10" step="0.1" disabled style="opacity:.4" title="Trigger % – 1% = schon bei 1% Gewinn abgesichert. 2–3% = mehr Spielraum vorher.">
       </label>
     </div>
 
     <div class="form-row">
       <label>
-        <span class="feat-cb"><input type="checkbox" id="nb-partial" onchange="nbToggle('nb-partial-frac',this.checked)"> Partial-TP</span>
-        <input id="nb-partial-frac" type="number" value="50" min="10" max="90" step="5" disabled style="opacity:.4" title="Anteil % (default: 50%)">
+        <span class="feat-cb"><input type="checkbox" id="nb-partial" onchange="nbToggle('nb-partial-frac',this.checked)"> Partial-TP <span class="tip" data-tip="Beim Zielkurs nur einen Teil verkaufen. Rest läuft weiter mit SL auf Kaufpreis (kein Verlust mehr möglich).">ⓘ</span></span>
+        <input id="nb-partial-frac" type="number" value="50" min="10" max="90" step="5" disabled style="opacity:.4" title="Anteil % – 50% = Hälfte sichern, Rest läuft weiter. 75% = konservativer.">
       </label>
-      <label>HTF-Timeframe
+      <label>HTF-Timeframe <span class="tip" data-tip="Kauft nur wenn der große Zeitrahmen auch aufwärts zeigt. 1h für 5m-Bots empfohlen. Verhindert Käufe gegen den übergeordneten Trend.">ⓘ</span>
         <select id="nb-htf-tf">
           <option value="">– deaktiviert –</option>
           <option value="15m">15m</option>
@@ -831,10 +848,10 @@
     </div>
 
     <div class="form-row">
-      <label>HTF Fast SMA
+      <label>HTF Fast SMA <span class="tip" data-tip="Schneller Durchschnitt für den großen Timeframe. Standard 9 passt zu 1h. Für 4h/1d besser 21 nehmen.">ⓘ</span>
         <input id="nb-htf-fast" type="number" value="9" min="2" max="200">
       </label>
-      <label>HTF Slow SMA
+      <label>HTF Slow SMA <span class="tip" data-tip="Langsamer Durchschnitt für den großen Timeframe. Standard 21 passt zu 1h. Für 4h/1d besser 55 nehmen.">ⓘ</span>
         <input id="nb-htf-slow" type="number" value="21" min="3" max="500">
       </label>
     </div>

@@ -40,6 +40,176 @@ LABEL_EMOJI = {
     "neutral": "⚪",
 }
 
+# ---------------------------------------------------------------------------
+# Parameter-Erklärungen (einfache Sprache, für /erklaerung)
+# ---------------------------------------------------------------------------
+PARAM_HELP: dict[str, tuple[str, str]] = {
+    # key: (Titel, HTML-Erklärungstext)
+    "timeframe": (
+        "⏱ Timeframe (Kerzen-Größe)",
+        "Die Kerzen-Größe bestimmt, <b>wie oft der Bot eine Entscheidung trifft</b>.\n\n"
+        "• <b>1m / 3m:</b> Sehr schnell – viele Trades, viele Fehlsignale. Nur für erfahrene Nutzer.\n"
+        "• <b>5m (Standard):</b> Gute Balance. Der Bot schaut alle 5 Minuten auf den Markt.\n"
+        "• <b>15m / 1h:</b> Ruhiger – weniger Trades, aber verlässlichere Signale.\n\n"
+        "💡 <i>Faustregel: Je volatiler der Coin, desto größer der Timeframe.</i>",
+    ),
+    "sma": (
+        "📈 Fast MA / Slow MA (SMA-Crossover)",
+        "Das ist das <b>Herzstück der Strategie</b>.\n\n"
+        "Stell dir zwei Linien vor, die dem Kurs folgen:\n"
+        "• <b>Fast MA (Standard: 9):</b> Kurze Linie – reagiert schnell auf Änderungen.\n"
+        "• <b>Slow MA (Standard: 21):</b> Lange Linie – träge und stabil.\n\n"
+        "Kreuzt die schnelle Linie die langsame <b>von unten nach oben</b> → 🟢 <b>Kaufen</b>\n"
+        "Kreuzt sie sie <b>von oben nach unten</b> → 🔴 <b>Verkaufen</b>\n\n"
+        "• Fast klein (5–7): Reagiert früh – macht aber mehr Fehler.\n"
+        "• Fast groß (12–15): Weniger Fehler – steigt aber später ein.\n\n"
+        "💡 <i>Fast sollte ¼ bis ½ des Slow-Werts sein (z.B. 9/21 oder 5/15).</i>",
+    ),
+    "sl": (
+        "🛑 Stop-Loss %",
+        "Die <b>Verlustbegrenzung</b>. Der Bot verkauft automatisch, wenn der Kurs zu weit fällt.\n\n"
+        "<b>Beispiel mit 3% Stop-Loss:</b>\n"
+        "• Kauf bei 100 €\n"
+        "• Kurs fällt auf 97 € (–3%) → Bot verkauft sofort\n"
+        "• Verlust begrenzt auf max. 3%\n\n"
+        "• <b>1–2%:</b> Sehr eng – wird bei normaler Volatilität oft ausgelöst (nervös).\n"
+        "• <b>3% (Standard):</b> Guter Mittelwert für BTC/ETH.\n"
+        "• <b>5–8%:</b> Gibt mehr Spielraum, verliert aber mehr wenn er auslöst.\n\n"
+        "💡 <i>Dieser Wert ist nur der Fallback. Normalerweise berechnet der Bot den SL\n"
+        "automatisch aus der aktuellen Volatilität (ATR).</i>",
+    ),
+    "tp": (
+        "🎯 Take-Profit %",
+        "Das <b>Gewinnziel</b>. Der Bot verkauft automatisch, wenn der Kurs weit genug gestiegen ist.\n\n"
+        "<b>Beispiel mit 6% Take-Profit:</b>\n"
+        "• Kauf bei 100 €\n"
+        "• Kurs steigt auf 106 € (+6%) → Bot verkauft sofort\n"
+        "• 6% Gewinn gesichert ✅\n\n"
+        "• <b>3–4%:</b> Nimmt Gewinne schnell mit – gut in ruhigen Märkten.\n"
+        "• <b>6% (Standard):</b> Ausgewogener Mittelwert.\n"
+        "• <b>10–15%:</b> Wartet auf große Bewegungen – gut in starken Trends.\n\n"
+        "💡 <i>TP sollte mindestens 2× so groß sein wie der SL\n"
+        "(Chance:Risiko ≥ 2:1 → langfristig profitabel auch mit 40% Trefferquote).</i>",
+    ),
+    "trailing": (
+        "🎢 Trailing Stop-Loss",
+        "Der SL <b>folgt dem steigenden Kurs automatisch nach oben</b> – aber nie nach unten.\n"
+        "So werden wachsende Gewinne abgesichert.\n\n"
+        "<b>Beispiel mit 2% Trailing:</b>\n"
+        "• Kauf bei 100 €, SL startet bei 98 €\n"
+        "• Kurs steigt auf 110 € → SL wandert auf 107,80 €\n"
+        "• Kurs steigt auf 120 € → SL wandert auf 117,60 €\n"
+        "• Kurs fällt auf 117,60 € → Bot verkauft → Gewinn gesichert ✅\n\n"
+        "• <b>1%:</b> Eng – sichert früh ab, wird aber bei kleinen Rücksetzern ausgelöst.\n"
+        "• <b>2% (Standard):</b> Gute Balance für BTC/ETH.\n"
+        "• <b>3–5%:</b> Gibt dem Kurs mehr Luft für Schwankungen.\n\n"
+        "💡 <i>Gut kombinierbar mit Breakeven:\n"
+        "Erst kein Verlust sichern (Breakeven), dann Gewinne schützen (Trailing).</i>",
+    ),
+    "breakeven": (
+        "🏁 Breakeven Stop-Loss",
+        "Sobald ein Trade einen kleinen Gewinn erreicht, <b>springt der SL auf den Kaufpreis</b>.\n"
+        "Danach ist ein Verlust <b>unmöglich</b> – im schlimmsten Fall ±0.\n\n"
+        "<b>Beispiel mit 1% Breakeven:</b>\n"
+        "• Kauf bei 100 €\n"
+        "• Kurs steigt auf 101 € (+1%) → SL springt auf 100 €\n"
+        "• Kurs fällt danach auf 100 € → Verkauf bei ±0 € (kein Verlust!) ✅\n\n"
+        "• <b>0.5%:</b> Sehr früh – fast sofort abgesichert, viele Trades enden bei ±0.\n"
+        "• <b>1% (Standard):</b> Sinnvoller Kompromiss.\n"
+        "• <b>2–3%:</b> Mehr Spielraum vor der Absicherung.\n\n"
+        "💡 <i>Perfekt kombiniert mit Trailing-SL:\n"
+        "Breakeven = kein Verlust möglich, Trailing = Gewinn sichern.</i>",
+    ),
+    "partial": (
+        "✂️ Partial Take-Profit",
+        "Beim Zielkurs <b>nur einen Teil der Position verkaufen</b>. Der Rest läuft weiter.\n\n"
+        "<b>Beispiel: 1 BTC, Kauf 90.000 €, TP 93.000 €, 50% Partial:</b>\n"
+        "• Kurs erreicht 93.000 € → 0,5 BTC verkauft → 1.500 € gesichert ✅\n"
+        "• Rest 0,5 BTC läuft weiter: SL = 90.000 € (kein Verlust), TP = 96.000 €\n"
+        "• Kurs erreicht 96.000 € → Rest verkauft → weitere 1.500 € ✅\n\n"
+        "• <b>25–33%:</b> Kleiner Teilverkauf – Großteil läuft weiter. Mehr Potential.\n"
+        "• <b>50% (Standard):</b> Ausgewogen – Hälfte sichern, Hälfte läuft weiter.\n"
+        "• <b>75%:</b> Konservativ – Großteil sofort gesichert.\n\n"
+        "💡 <i>Der Remainder-Trade läuft nur wenn der Restbetrag über 15 € liegt.</i>",
+    ),
+    "htf": (
+        "🔭 HTF-Filter (Higher Timeframe)",
+        "Der Bot kauft nur, wenn auch der <b>übergeordnete Zeitrahmen aufwärts zeigt</b>.\n"
+        "Verhindert Käufe gegen den großen Trend.\n\n"
+        "<b>Beispiel (Bot auf 5m, HTF = 1h):</b>\n"
+        "• 5m-Chart zeigt: 🟢 Kaufsignal\n"
+        "• 1h-Chart zeigt: 📉 Abwärtstrend\n"
+        "→ Bot kauft NICHT – der große Trend ist gegen uns.\n\n"
+        "• <b>15m:</b> Leichte Filterung – für 1m/3m-Bots.\n"
+        "• <b>1h (empfohlen für 5m):</b> Filtert Käufe gegen den Stunden-Trend.\n"
+        "• <b>4h:</b> Starke Filterung – sehr wenige, aber zuverlässige Signale.\n"
+        "• <b>1d:</b> Kauft nur im täglichen Aufwärtstrend (Swing-Trading).\n\n"
+        "💡 <i>Aktivieren wenn du viele Verluste in Korrekturen hast.\n"
+        "Weniger Trades, aber höhere Trefferquote.</i>",
+    ),
+    "volumen": (
+        "📊 Volumen-Filter",
+        "Kauft nur, wenn <b>wirklich etwas los ist</b> am Markt.\n\n"
+        "Ein Kaufsignal bei sehr geringem Volumen ist oft ein Fehlalarm.\n\n"
+        "<b>Beispiel mit Faktor 1.2:</b>\n"
+        "• Durchschnittliches Volumen (letzte 20 Kerzen): 1.000.000 €\n"
+        "• Aktuelles Volumen: 1.200.000 € (+20%) ✅ → Kauf erlaubt\n"
+        "• Aktuelles Volumen: 800.000 € ❌ → Kein Kauf\n\n"
+        "• <b>1.0:</b> Jedes Volumen über Durchschnitt reicht.\n"
+        "• <b>1.2 (Standard):</b> 20% über Durchschnitt nötig.\n"
+        "• <b>1.5–2.0:</b> Nur bei deutlichem Volumen-Anstieg.",
+    ),
+    "cooldown": (
+        "⏳ SL-Cooldown",
+        "<b>Wartepause nach einem Verlust.</b>\n\n"
+        "Wenn der Bot ausgestoppt wird, wartet er N Kerzen bevor er wieder kauft.\n"
+        "Verhindert, dass er sofort wieder in einen fallenden Markt springt.\n\n"
+        "<b>Beispiel: 3 Candles bei 5m-Timeframe:</b>\n"
+        "• SL ausgelöst um 12:00 Uhr\n"
+        "• Nächster möglicher Kauf: 12:15 Uhr\n\n"
+        "• <b>0:</b> Kein Cooldown – sofortiger Wiederkauf möglich.\n"
+        "• <b>3 (Standard):</b> 15 Minuten Pause bei 5m-Timeframe.\n"
+        "• <b>5–10:</b> 25–50 Minuten – konservativer Ansatz.",
+    ),
+    "buffer": (
+        "🛡 Safety Buffer",
+        "Ein <b>Kapitalanteil der niemals investiert wird</b>.\n\n"
+        "<b>Beispiel: 10% Buffer, 1.000 € Guthaben:</b>\n"
+        "• 100 € werden nie angefasst (Reserve)\n"
+        "• Von den verbleibenden 900 € wird der Handelsbetrag berechnet\n\n"
+        "• <b>5%:</b> Aggressiv – fast alles wird eingesetzt.\n"
+        "• <b>10% (Standard):</b> Sinnvoller Puffer.\n"
+        "• <b>20–30%:</b> Konservativ – mehr Reserve für schlechte Zeiten.\n\n"
+        "💡 <i>Wichtig wenn mehrere Bots gleichzeitig laufen – damit sie sich nicht\n"
+        "gegenseitig das Kapital wegkaufen.</i>",
+    ),
+    "rsi": (
+        "📉 RSI-Filter",
+        "Verhindert Käufe, wenn der Markt <b>schon zu weit gestiegen ist</b>.\n\n"
+        "RSI = Wert von 0–100.\n"
+        "• Über 70: überkauft (zu heiß)\n"
+        "• Unter 30: überverkauft (zu billig)\n\n"
+        "Der RSI-Filter blockiert:\n"
+        "• <b>Käufe</b> wenn RSI > rsi_buy_max (Standard: 65)\n"
+        "• <b>Verkäufe</b> wenn RSI < rsi_sell_min (Standard: 35)\n\n"
+        "💡 <i>Du kannst den RSI nicht direkt setzen – der Supervisor\n"
+        "passt ihn automatisch ans Marktregime an\n"
+        "(TREND: breiter, SIDEWAYS: enger, VOLATILE: sehr eng).</i>",
+    ),
+    "atr": (
+        "📐 ATR – Automatisches SL/TP",
+        "Der Bot passt SL und TP automatisch an die <b>aktuelle Volatilität</b> an.\n\n"
+        "ATR = Wie weit sich der Kurs im Durchschnitt pro Kerze bewegt.\n\n"
+        "<b>Beispiel: BTC, ATR = 500 €:</b>\n"
+        "• SL-Multiplikator 1.5 → SL = 1,5 × 500 = 750 € unter Kaufpreis\n"
+        "• TP-Multiplikator 2.5 → TP = 2,5 × 500 = 1.250 € über Kaufpreis\n\n"
+        "Ist gerade viel los (hohe ATR) → weiter SL/TP.\n"
+        "Ruhiger Markt (niedrige ATR) → enger SL/TP.\n\n"
+        "💡 <i>Die Multiplikatoren werden vom Supervisor automatisch angepasst:\n"
+        "TREND → 1.5/2.5 | SIDEWAYS → 1.2/1.8 | VOLATILE → 2.0/3.5</i>",
+    ),
+}
+
 
 def _parse_duration(s: str) -> int | None:
     """
@@ -125,6 +295,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("sentiment",   self._cmd_sentiment))
         self._app.add_handler(CommandHandler("news",       self._cmd_news))
         self._app.add_handler(CommandHandler("set_alert_interval", self._cmd_set_alert_interval))
+        self._app.add_handler(CommandHandler("erklaerung",         self._cmd_erklaerung))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -157,6 +328,7 @@ class TelegramNewsBot:
             ("sentiment",   "Sentiment-Trend der letzten 24h (z.B. /sentiment BTC/EUR)"),
             ("news",               "Letzte News (z.B. /news BTC/EUR)"),
             ("set_alert_interval", "Alert-Interval setzen (z.B. /set_alert_interval 2h)"),
+            ("erklaerung",         "Parameter erklärt (z.B. /erklaerung trailing)"),
             ("help",               "Alle Befehle anzeigen"),
         ]
         try:
@@ -496,7 +668,10 @@ class TelegramNewsBot:
             "/sell BTC/EUR \\- Verkauf erzwingen\n\n"
             "🎯 *SL/TP anpassen*\n"
             "/set\\_sl BTC/EUR 2\\.0 \\- SL auf 2% unter Entry\n"
-            "/set\\_tp BTC/EUR 4\\.0 \\- TP auf 4% über Entry",
+            "/set\\_tp BTC/EUR 4\\.0 \\- TP auf 4% über Entry\n\n"
+            "📖 *Hilfe*\n"
+            "/erklaerung \\- Parameter einfach erklärt \\(z\\.B\\. /erklaerung trailing\\)\n"
+            "/erklaerung sl \\| tp \\| sma \\| trailing \\| breakeven \\| partial \\| htf \\| volumen \\| cooldown \\| buffer \\| rsi \\| atr",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
 
@@ -1141,6 +1316,19 @@ class TelegramNewsBot:
             await self._cmd_params(update, context)
             return
 
+        # erklaerung / was ist / wie funktioniert
+        m = re.search(
+            r'\b(?:erkl[äa]r(?:ung)?e?|was ist|wie funktioniert)\s+([\w-]+)', text
+        )
+        if m:
+            context.args = [m.group(1)]
+            await self._cmd_erklaerung(update, context)
+            return
+        if re.search(r'\berkl[äa]r(?:ung)?\b', text):
+            context.args = []
+            await self._cmd_erklaerung(update, context)
+            return
+
         # alert interval: "alert interval 30", "cooldown 2h", "benachrichtigung 45min"
         m = re.search(
             r'\b(?:alert[\s\-]?(?:interval|cooldown)?|cooldown|benachrichtigungs?[\s\-]?intervall?)\s+([\d.]+(?:h|std|min|m)?)\b',
@@ -1398,6 +1586,67 @@ class TelegramNewsBot:
             await update.message.reply_text(
                 f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2
             )
+
+    # ------------------------------------------------------------------
+    # Parameter-Erklärungen
+    # ------------------------------------------------------------------
+
+    async def _cmd_erklaerung(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Erklärt einen Parameter in einfacher Sprache."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+
+        # Alias-Map: was der User tippt → PARAM_HELP-Key
+        ALIASES = {
+            "trailing": "trailing", "trail": "trailing",
+            "breakeven": "breakeven", "be": "breakeven",
+            "partial": "partial", "partiell": "partial", "teiltp": "partial",
+            "htf": "htf", "timefilter": "htf", "trendfilter": "htf",
+            "volumen": "volumen", "volume": "volumen", "vol": "volumen",
+            "cooldown": "cooldown", "pause": "cooldown",
+            "sl": "sl", "stoploss": "sl", "stop": "sl",
+            "tp": "tp", "takeprofit": "tp",
+            "sma": "sma", "ma": "sma", "fast": "sma", "slow": "sma", "crossover": "sma",
+            "buffer": "buffer", "sicherheit": "buffer", "reserve": "buffer",
+            "rsi": "rsi",
+            "atr": "atr", "volatilität": "atr", "volatility": "atr",
+            "timeframe": "timeframe", "tf": "timeframe", "kerzen": "timeframe",
+        }
+
+        if not context.args:
+            # Übersicht aller verfügbaren Erklärungen
+            lines = ["<b>📖 Parameter-Erklärungen</b>\n"]
+            lines.append("Schreibe <code>/erklaerung &lt;parameter&gt;</code> für Details:\n")
+            for key, (titel, _) in PARAM_HELP.items():
+                lines.append(f"• <code>/erklaerung {key}</code> – {titel}")
+            lines.append('\n<i>Freetext: "erklaere trailing" oder "was ist breakeven"</i>')
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        raw = context.args[0].lower().replace("-", "").replace("_", "").replace(" ", "")
+        key = ALIASES.get(raw)
+
+        if not key:
+            # Fuzzy: Teilstring-Suche
+            for alias, k in ALIASES.items():
+                if raw in alias or alias in raw:
+                    key = k
+                    break
+
+        if not key:
+            known = ", ".join(f"<code>{k}</code>" for k in PARAM_HELP)
+            await update.message.reply_text(
+                f"❓ Unbekannter Parameter: <code>{raw}</code>\n\nVerfügbar: {known}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        titel, text = PARAM_HELP[key]
+        await update.message.reply_text(
+            f"<b>{titel}</b>\n\n{text}",
+            parse_mode=ParseMode.HTML,
+        )
 
     # ------------------------------------------------------------------
     # Alert-Interval konfigurieren
