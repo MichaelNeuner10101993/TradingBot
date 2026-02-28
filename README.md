@@ -130,6 +130,24 @@ TP = entry + 2.5 × ATR(14)
 ```
 Bei zu wenig Daten: Fallback auf feste Prozentsätze (`--sl` / `--tp`).
 
+### 4. Trailing Stop-Loss (optional)
+Mit `--trailing-sl` folgt der Stop-Loss dem steigenden Kurs nach oben – Gewinne werden automatisch abgesichert:
+```
+trail = aktueller_preis × (1 − trailing_sl_pct)   # Standard: 2%
+SL wird nur angehoben, nie abgesenkt
+```
+
+### 5. Volumen-Filter (optional)
+Mit `--volume-filter` werden Crossover-Signale ignoriert, wenn das Handelsvolumen unterdurchschnittlich ist:
+```
+Signal nur wenn: letztes_volumen ≥ Avg(letzte 20 Candles) × volume_factor
+```
+Verhindert Fehlsignale in dünnen Märkten ohne Marktbewegung.
+
+### 6. SL-Cooldown (optional)
+Nach einem Stop-Loss wartet der Bot N Candles (`--sl-cooldown 3`, Standard: 3 = 15min bei 5m) bevor er wieder kauft.
+Verhindert sofortigen Wiedereinstieg in einen weiter fallenden Markt.
+
 ### Positionsgröße
 Das Kapital wird gleichmäßig auf alle aktiven Bots verteilt:
 ```
@@ -155,6 +173,29 @@ Die Bots übernehmen die angepassten Parameter beim nächsten Loop-Durchlauf **o
 | **SIDEWAYS** | ADX ≤ 22, ATR% ≤ 3% | buy < 60, sell > 40 | 1.2× | 1.8× |
 | **VOLATILE** | ATR% > 3% | buy < 55, sell > 45 | 2.0× | 3.5× |
 
+### Multi-Varianten-Optimierung
+
+Pro Supervisor-Durchlauf werden **24 Varianten** getestet (6 SMA-Kombinationen × 4 Feature-Kombos):
+
+| Trailing SL | Volumen-Filter | SMA-Varianten |
+|-------------|----------------|---------------|
+| ❌ | ❌ | Scalp, Agile, Standard, MACD, Mittel, Swing |
+| ✅ | ❌ | … × 6 |
+| ❌ | ✅ | … × 6 |
+| ✅ | ✅ | … × 6 |
+
+Die Variante mit dem höchsten simulierten P&L gewinnt.
+Wenn die optimale Kombo von der aktuellen Bot-Konfiguration abweicht, sendet der Supervisor
+eine **Telegram-Empfehlung** – der Bot übernimmt sie aber nur, wenn kein CLI-Flag gesetzt ist.
+
+```
+🔬 Supervisor-Empfehlung: BTC/EUR
+Strategie: Agile 7/18  Sim-P&L: +3.2% (5 Trades)
+Trailing SL: ✅ empfohlen  (aktuell: ❌)
+Volumen-Filter: ❌ empfohlen  (aktuell: ❌)
+→ Neustart mit: --trailing-sl  um zu übernehmen
+```
+
 ### Cross-Bot-Learning
 
 Nach jedem Optimierungsdurchlauf prüft der Supervisor, ob die beste Strategie eines Coins
@@ -179,6 +220,8 @@ Jeder Durchlauf wird append-only in `supervisor_log` persistiert (eine Tabelle p
 | `fast / slow` | Gewählte SMA-Parameter |
 | `sim_pnl` | Simulierter P&L (Backtest) |
 | `source` | `own` oder `cross:BTC` |
+| `use_trailing_sl` | Trailing SL aktiv bei dieser Variante |
+| `volume_filter` | Volumen-Filter aktiv bei dieser Variante |
 
 Abfrage via Telegram: `/supervisor` (Übersicht) oder `/supervisor BTC/EUR` (Verlauf).
 
@@ -228,6 +271,11 @@ botvenv/bin/python main.py --symbol ETH/EUR --sl 0.025 --tp 0.05
 | `--tp` | `0.06` | Take-Profit Fallback (6%) |
 | `--safety-buffer` | `0.10` | Anteil des Kapitals der nie angefasst wird |
 | `--startup-delay` | `0` | Verzögerter Start in Sekunden (Rate-Limit staffeln) |
+| `--trailing-sl` | – | Trailing Stop-Loss aktivieren |
+| `--trailing-sl-pct` | `0.02` | Abstand des Trailing-SL (2% = 2% unter aktuellem Kurs) |
+| `--sl-cooldown` | `3` | Candles Wartezeit nach SL-Hit bevor nächster Kauf |
+| `--volume-filter` | – | Volumen-Filter aktivieren |
+| `--volume-factor` | `1.2` | Signal nur bei ≥ 1.2× Durchschnittsvolumen |
 | `--dry-run` | – | Kein echter Handel |
 
 ---
