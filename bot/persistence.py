@@ -5,7 +5,7 @@ Tabellen: orders, positions, errors
 import sqlite3
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("tradingbot.persistence")
@@ -78,6 +78,13 @@ class StateDB:
         # Migration: pyramid_count zu trades (bestehende DBs)
         try:
             self.conn.execute("ALTER TABLE trades ADD COLUMN pyramid_count INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
+
+        # Migration: is_remainder zu trades (Partial-TP)
+        try:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN is_remainder INTEGER DEFAULT 0")
             self.conn.commit()
         except sqlite3.OperationalError:
             pass  # Spalte existiert bereits
@@ -183,15 +190,17 @@ class StateDB:
         entry_price: float,
         sl_price: float,
         tp_price: float,
+        is_remainder: int = 0,
     ):
         self.conn.execute("""
-            INSERT INTO trades (client_id, symbol, amount, entry_price, sl_price, tp_price, status, opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
+            INSERT INTO trades (client_id, symbol, amount, entry_price, sl_price, tp_price, status, opened_at, is_remainder)
+            VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)
             ON CONFLICT(client_id) DO NOTHING
-        """, (client_id, symbol, amount, entry_price, sl_price, tp_price, utcnow()))
+        """, (client_id, symbol, amount, entry_price, sl_price, tp_price, utcnow(), is_remainder))
         self.conn.commit()
         log.info(f"Trade geöffnet: {symbol} amount={amount} entry={entry_price:.2f} "
-                 f"SL={sl_price:.2f} TP={tp_price:.2f}")
+                 f"SL={sl_price:.2f} TP={tp_price:.2f}"
+                 + (" [Remainder]" if is_remainder else ""))
 
     def get_open_trades(self, symbol: str) -> list:
         cur = self.conn.execute(
@@ -291,6 +300,15 @@ class StateDB:
     def get_all_state(self) -> dict:
         cur = self.conn.execute("SELECT key, value FROM bot_state")
         return {row[0]: row[1] for row in cur.fetchall()}
+
+    def cleanup_old_records(self, days: int = 30) -> tuple[int, int]:
+        """Löscht Einträge aus orders und errors die älter als `days` Tage sind. trades werden nie gelöscht."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        r1 = self.conn.execute("DELETE FROM orders WHERE created_at < ?", (cutoff,))
+        r2 = self.conn.execute("DELETE FROM errors WHERE occurred_at < ?", (cutoff,))
+        self.conn.commit()
+        log.info("Cleanup: %d orders + %d errors gelöscht (>%dd)", r1.rowcount, r2.rowcount, days)
+        return r1.rowcount, r2.rowcount
 
     # --- Errors ---
 

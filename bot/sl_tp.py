@@ -75,6 +75,20 @@ def update_trailing_sl(
     return None
 
 
+def check_breakeven(trade: dict, current_price: float, cfg: RiskConfig) -> bool:
+    """
+    Prüft ob der SL auf Entry-Preis angehoben werden soll (Breakeven-SL).
+    Gibt True zurück wenn Gewinn >= breakeven_trigger_pct und SL noch unter Entry.
+    """
+    if not cfg.breakeven_enabled:
+        return False
+    entry = float(trade["entry_price"])
+    sl    = float(trade["sl_price"])
+    if sl >= entry:      # bereits auf/über Entry
+        return False
+    return (current_price - entry) / entry >= cfg.breakeven_trigger_pct
+
+
 class SlTpMonitor:
     def __init__(self, cfg: RiskConfig):
         self.cfg = cfg

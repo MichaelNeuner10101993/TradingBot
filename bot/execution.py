@@ -157,13 +157,13 @@ class Executor:
         self.db.upsert_order(client_id, order)
         return order
 
-    def sell(self, amount: float, last_price: float, trade_client_id: str | None = None, reason: str = "signal_close") -> dict | None:
-        amount = self._precision_amount(amount)
-        if amount <= 0:
+    def sell(self, amount: float, last_price: float, trade_client_id: str | None = None, reason: str = "signal_close", override_amount: float | None = None) -> dict | None:
+        effective_amount = self._precision_amount(override_amount if override_amount is not None else amount)
+        if effective_amount <= 0:
             log.warning("SELL abgebrochen: amount <= 0 nach Precision-Rounding")
             return None
 
-        ok, reason_min = self._meets_exchange_minimum(amount, last_price)
+        ok, reason_min = self._meets_exchange_minimum(effective_amount, last_price)
         if not ok:
             log.warning(f"SELL abgebrochen (Staub-Position): {reason_min}")
             return None
@@ -172,12 +172,12 @@ class Executor:
         base = self.cfg.symbol.split("/")[0]
 
         if self.cfg.dry_run:
-            log.info(f"[DRY] SELL {amount} {base} @ ~{last_price:.2f} (client_id={client_id})")
+            log.info(f"[DRY] SELL {effective_amount} {base} @ ~{last_price:.2f} (client_id={client_id})")
             order = {"id": client_id, "symbol": self.cfg.symbol, "side": "sell",
-                     "amount": amount, "price": last_price, "status": "dry_run"}
+                     "amount": effective_amount, "price": last_price, "status": "dry_run"}
         else:
-            log.info(f"SELL {amount} {base} @ ~{last_price:.2f} (client_id={client_id})")
-            order = self._submit_order("sell", amount)
+            log.info(f"SELL {effective_amount} {base} @ ~{last_price:.2f} (client_id={client_id})")
+            order = self._submit_order("sell", effective_amount)
             order = self._fetch_order_status(order["id"], fallback=order)
             log.info(f"SELL Order-Status: {order.get('status')} | filled={order.get('filled')}")
             if not order.get("average") and not order.get("price"):

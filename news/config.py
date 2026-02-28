@@ -25,6 +25,8 @@ class NewsAgentConfig:
     min_title_words: int = 5             # Mindestanzahl Wörter im Titel
     # Volltext-Crawling via trafilatura (opt-in, langsamer)
     fetch_full_body: bool = False
+    # Alert-Aggregation: mehrere Artikel pro Coin werden zu einem Konsens-Alert zusammengefasst
+    alert_cooldown_minutes: int = 60   # kein zweiter Alert für denselben Coin innerhalb von N Minuten
 
     # Pfade
     db_path: str = "db/news.db"
@@ -83,9 +85,17 @@ class NewsAgentConfig:
         "https://blockworks.co/feed/",
         "https://www.newsbtc.com/feed/",
         "https://cryptonews.com/news/feed/",
+        "https://ambcrypto.com/feed/",
+        "https://beincrypto.com/feed/",
+        "https://cryptobriefing.com/feed/",
+        "https://coingape.com/feed/",
+        "https://theblock.co/rss.xml",
         # Reddit – Community-Sentiment (tägliche Top-Posts)
         "https://www.reddit.com/r/CryptoCurrency/top.rss?t=day",
         "https://www.reddit.com/r/Bitcoin/top.rss?t=day",
+        "https://www.reddit.com/r/ethereum/top.rss?t=day",
+        "https://www.reddit.com/r/XRP/top.rss?t=day",
+        "https://www.reddit.com/r/cardano/top.rss?t=day",
     ])
 
     # Google News RSS – Suchbegriffe
@@ -95,9 +105,13 @@ class NewsAgentConfig:
         "cryptocurrency hack",
         "ethereum",
         "trump crypto",
-        # Neu
         "XRP ripple SEC",
         "crypto ETF approval",
         "DeFi exploit",
         "bitcoin whale",
+        "ADA cardano",
+        "SNX synthetix",
+        "PEPE memecoin",
+        "crypto market crash",
+        "stablecoin regulation",
     ])

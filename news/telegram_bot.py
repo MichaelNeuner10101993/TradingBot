@@ -41,6 +41,26 @@ LABEL_EMOJI = {
 }
 
 
+def _parse_duration(s: str) -> int | None:
+    """
+    Parst eine Zeitangabe → Minuten.
+    Unterstützt: '30', '30min', '30m', '2h', '2std', '1.5h', '90minuten'
+    Gibt None zurück bei ungültigem Format.
+    """
+    import re as _re
+    m = _re.match(r'^([\d.]+)\s*(h|std(?:unden?)?|min(?:uten?)?|m)?$', s.strip().lower())
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "min").lower()
+    if unit.startswith("h") or unit.startswith("st"):
+        return int(val * 60)
+    return int(val)
+
+
 class TelegramNewsBot:
     def __init__(self, cfg: NewsAgentConfig, db_conn: sqlite3.Connection):
         self.cfg = cfg
@@ -104,6 +124,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("supervisor",  self._cmd_supervisor))
         self._app.add_handler(CommandHandler("sentiment",   self._cmd_sentiment))
         self._app.add_handler(CommandHandler("news",       self._cmd_news))
+        self._app.add_handler(CommandHandler("set_alert_interval", self._cmd_set_alert_interval))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -134,8 +155,9 @@ class TelegramNewsBot:
             ("rendite",     "Detaillierte Rentabilität aller Bots"),
             ("supervisor",  "Supervisor-Erfahrung abrufen (z.B. /supervisor BTC/EUR)"),
             ("sentiment",   "Sentiment-Trend der letzten 24h (z.B. /sentiment BTC/EUR)"),
-            ("news",        "Letzte News (z.B. /news BTC/EUR)"),
-            ("help",        "Alle Befehle anzeigen"),
+            ("news",               "Letzte News (z.B. /news BTC/EUR)"),
+            ("set_alert_interval", "Alert-Interval setzen (z.B. /set_alert_interval 2h)"),
+            ("help",               "Alle Befehle anzeigen"),
         ]
         try:
             resp = requests.post(
@@ -248,6 +270,101 @@ class TelegramNewsBot:
         )
         self.db.commit()
         logger.info("Telegram-Alert gesendet (msg_id=%d, event_id=%d)", msg.message_id, event_id)
+
+    def send_aggregated_alert(
+        self,
+        coin: str,
+        articles: list[dict],
+        consensus_score: float,
+        label: str,
+    ):
+        """Sendet einen Konsens-Alert für mehrere Artikel desselben Coins."""
+        if not self.cfg.telegram_bot_token:
+            return
+        asyncio.run(self._send_aggregated_async(coin, articles, consensus_score, label))
+
+    async def _send_aggregated_async(
+        self,
+        coin: str,
+        articles: list[dict],
+        consensus_score: float,
+        label: str,
+    ):
+        emoji = LABEL_EMOJI.get(label, "⚪")
+        score_str = f"{consensus_score:+.2f}"
+        n = len(articles)
+
+        bullish  = [a for a in articles if a["score"] > 0]
+        bearish  = [a for a in articles if a["score"] < 0]
+        neutral  = [a for a in articles if a["score"] == 0]
+
+        lines = [
+            f"{emoji} *\\[{label.upper()}\\]* {_esc(coin)} — Konsens: `{score_str}` \\({n} Artikel\\)\n",
+        ]
+
+        if bullish:
+            lines.append("📈 *Bullish:*")
+            for a in sorted(bullish, key=lambda x: -x["score"])[:3]:
+                lines.append(f"  `{a['score']:+.2f}` · _{_esc(a['item'].title[:120])}_")
+        if bearish:
+            lines.append("📉 *Bearish:*")
+            for a in sorted(bearish, key=lambda x: x["score"])[:3]:
+                lines.append(f"  `{a['score']:+.2f}` · _{_esc(a['item'].title[:120])}_")
+        if neutral:
+            lines.append("⚪ *Neutral:*")
+            for a in neutral[:2]:
+                lines.append(f"  `{a['score']:+.2f}` · _{_esc(a['item'].title[:120])}_")
+
+        lines.append("")
+        if label == "bearish":
+            lines.append("⚠️ Empfehlung: Bot\\(s\\) pausieren bis Lage klarer")
+        elif label == "bullish":
+            lines.append("💡 Empfehlung: Starkes positives Signal – Bots laufen lassen")
+        else:
+            lines.append("⚖️ Empfehlung: Widersprüchliche Signale – Abwarten")
+        lines.append(f"{'─' * 20}")
+
+        text = "\n".join(lines)
+
+        running = _get_running_symbols(self.cfg.web_api_base)
+        buttons = []
+        event_ids = [a["event_id"] for a in articles]
+
+        if label == "bearish":
+            stoppable = [coin] if coin in running else []
+            if stoppable:
+                buttons.append(InlineKeyboardButton(
+                    f"🛑 {coin} stoppen",
+                    callback_data=json.dumps({"action": "stop_bot", "symbol": coin, "event_id": event_ids[0]}),
+                ))
+        elif label == "bullish" and coin not in running:
+            buttons.append(InlineKeyboardButton(
+                f"▶ {coin} starten",
+                callback_data=json.dumps({"action": "start_bot", "symbol": coin, "event_id": event_ids[0]}),
+            ))
+        buttons.append(InlineKeyboardButton(
+            "✅ Ignorieren",
+            callback_data=json.dumps({"action": "dismiss", "event_id": event_ids[0]}),
+        ))
+
+        async with Bot(self.cfg.telegram_bot_token) as bot:
+            msg = await bot.send_message(
+                chat_id=self.cfg.telegram_chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=InlineKeyboardMarkup([buttons]),
+                disable_web_page_preview=True,
+            )
+
+        self.db.execute(
+            "INSERT INTO alert_history (news_event_id, telegram_msg_id, action, acted_at) VALUES (?,?,?,?)",
+            (event_ids[0], msg.message_id, "sent", datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+        logger.info(
+            "Aggregierter Alert gesendet: %s | %d Artikel | Konsens %.2f (msg_id=%d)",
+            coin, n, consensus_score, msg.message_id,
+        )
 
     # ------------------------------------------------------------------
     # Callback-Handler (Inline-Buttons)
@@ -1024,6 +1141,16 @@ class TelegramNewsBot:
             await self._cmd_params(update, context)
             return
 
+        # alert interval: "alert interval 30", "cooldown 2h", "benachrichtigung 45min"
+        m = re.search(
+            r'\b(?:alert[\s\-]?(?:interval|cooldown)?|cooldown|benachrichtigungs?[\s\-]?intervall?)\s+([\d.]+(?:h|std|min|m)?)\b',
+            text,
+        )
+        if m:
+            context.args = [m.group(1)]
+            await self._cmd_set_alert_interval(update, context)
+            return
+
         # sl setzen: "sl btc 2" oder "stop loss btc 2.5"
         m = re.search(r'\b(?:sl|stop\s*loss)\s+([\w/]+)\s+([\d.]+)', text)
         if m:
@@ -1051,22 +1178,38 @@ class TelegramNewsBot:
             return
         if not context.args:
             await update.message.reply_text(
-                "Verwendung: `/start_bot BTC/EUR`", parse_mode=ParseMode.MARKDOWN_V2
+                "Verwendung: `/start_bot BTC/EUR \\[sl\\=2 tp\\=4 trailing breakeven htf\\=1h\\]`\n"
+                "_Optionale Parameter: `sl=2`, `tp=4`, `trailing`, `trailing=2`, `breakeven`, "
+                "`breakeven=1`, `partial`, `partial=60`, `htf=1h`, `volume`, `cooldown=5`_",
+                parse_mode=ParseMode.MARKDOWN_V2,
             )
             return
-        symbol = " ".join(context.args).upper().strip()
+        symbol    = _normalize_symbol(context.args[0])
+        overrides = _parse_bot_overrides(context.args[1:]) if len(context.args) > 1 else {}
         await update.message.reply_text(f"▶ Starte {_esc(symbol)}…", parse_mode=ParseMode.MARKDOWN_V2)
-        result = _call_start_api(self.cfg.web_api_base, symbol)
+        result = _call_start_api(self.cfg.web_api_base, symbol, overrides)
         if result["ok"]:
             p    = result.get("params", {})
             sl_s = f"{p.get('sl', 0.03)*100:.1f}%"
             tp_s = f"{p.get('tp', 0.06)*100:.1f}%"
-            await update.message.reply_text(
+            tf   = p.get("timeframe", "5m")
+            # Feature-Zusammenfassung
+            feats = []
+            if p.get("trailing_sl"):     feats.append(f"Trailing {p.get('trailing_sl_pct', 0.02)*100:.1f}%")
+            if p.get("breakeven"):       feats.append(f"Breakeven {p.get('breakeven_pct', 0.01)*100:.1f}%")
+            if p.get("partial_tp"):      feats.append(f"Partial\\-TP {p.get('partial_tp_fraction', 0.5)*100:.0f}%")
+            if p.get("htf_timeframe"):   feats.append(f"HTF {p.get('htf_timeframe')}")
+            if p.get("volume_filter"):   feats.append(f"Vol ×{p.get('volume_factor', 1.2):.1f}")
+            cd = p.get("sl_cooldown", 3)
+            if cd != 3:                  feats.append(f"Cooldown {cd}c")
+            msg = (
                 f"✅ *{_esc(symbol)}* gestartet\\.\n"
-                f"_{_esc(p.get('timeframe', '5m'))} \\| Fast {p.get('fast', 9)} \\| "
-                f"Slow {p.get('slow', 21)} \\| SL {_esc(sl_s)} \\| TP {_esc(tp_s)}_",
-                parse_mode=ParseMode.MARKDOWN_V2,
+                f"_{_esc(tf)} \\| Fast {p.get('fast', 9)} \\| Slow {p.get('slow', 21)} "
+                f"\\| SL {_esc(sl_s)} \\| TP {_esc(tp_s)}_"
             )
+            if feats:
+                msg += f"\n_Features: {_esc(' · '.join(feats))}_"
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
         else:
             await update.message.reply_text(
                 f"❌ Fehler beim Starten von *{_esc(symbol)}*:\n`{_esc(result['error'])}`",
@@ -1257,6 +1400,63 @@ class TelegramNewsBot:
             )
 
     # ------------------------------------------------------------------
+    # Alert-Interval konfigurieren
+    # ------------------------------------------------------------------
+
+    async def _cmd_set_alert_interval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt das Mindest-Intervall zwischen zwei Alerts desselben Coins."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+
+        current = self.cfg.alert_cooldown_minutes
+        if current >= 60 and current % 60 == 0:
+            current_str = f"{current // 60}h"
+        elif current >= 60:
+            current_str = f"{current // 60}h {current % 60}min"
+        else:
+            current_str = f"{current}min"
+
+        if not context.args:
+            await update.message.reply_text(
+                f"⏱ *Alert\\-Interval* \\(aktuell: `{_esc(current_str)}`\\)\n\n"
+                f"Verwendung: `/set_alert_interval <Wert>`\n"
+                f"Beispiele: `30` `45min` `1h` `2h` `90min`\n"
+                f"Minimum: 5 min \\| Maximum: 24h",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        minutes = _parse_duration(context.args[0])
+        if minutes is None or not (5 <= minutes <= 1440):
+            await update.message.reply_text(
+                "❌ Ungültiger Wert\\. Beispiele: `30` `45min` `1h` `2h`\n"
+                "Erlaubt: 5 min bis 24h \\(1440 min\\)",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        self.cfg.alert_cooldown_minutes = minutes
+        self.db.execute(
+            "INSERT OR REPLACE INTO news_settings (key, value) VALUES ('alert_cooldown_minutes', ?)",
+            (str(minutes),),
+        )
+        self.db.commit()
+
+        if minutes >= 60 and minutes % 60 == 0:
+            display = f"{minutes // 60}h"
+        elif minutes >= 60:
+            display = f"{minutes // 60}h {minutes % 60}min"
+        else:
+            display = f"{minutes}min"
+
+        await update.message.reply_text(
+            f"✅ Alert\\-Interval gesetzt: `{_esc(display)}`\n"
+            f"Kein zweiter Alert für denselben Coin innerhalb von `{_esc(display)}`\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    # ------------------------------------------------------------------
     # Test-Nachricht
     # ------------------------------------------------------------------
 
@@ -1315,30 +1515,98 @@ def _get_running_symbols(base_url: str) -> set[str]:
         return set()
 
 
-def _call_start_api(base_url: str, symbol: str) -> dict:
-    sl, tp, fast, slow, timeframe = 0.03, 0.06, 9, 21, "5m"
+def _parse_bot_overrides(args: list[str]) -> dict:
+    """
+    Parst Inline-Argumente für /start_bot nach dem Symbol.
+    Beispiele: trailing  trailing=2  breakeven=1  htf=1h  sl=2  partial=60  volume  cooldown=5
+    """
+    overrides: dict = {}
+    for arg in args:
+        arg = arg.lower().strip()
+        key, val = (arg.split("=", 1) + [None])[:2]
+        try:
+            if key in ("sl", "stop-loss", "stop_loss"):
+                if val: overrides["sl"] = float(val.strip("%")) / 100
+            elif key in ("tp", "take-profit", "take_profit"):
+                if val: overrides["tp"] = float(val.strip("%")) / 100
+            elif key in ("fast", "f"):
+                if val: overrides["fast"] = int(val)
+            elif key in ("slow", "s"):
+                if val: overrides["slow"] = int(val)
+            elif key in ("tf", "timeframe"):
+                if val: overrides["timeframe"] = val
+            elif key in ("trailing", "trail"):
+                overrides["trailing_sl"] = True
+                if val: overrides["trailing_sl_pct"] = float(val.strip("%")) / 100
+            elif key in ("breakeven", "be"):
+                overrides["breakeven"] = True
+                if val: overrides["breakeven_pct"] = float(val.strip("%")) / 100
+            elif key in ("partial", "partial-tp"):
+                overrides["partial_tp"] = True
+                if val: overrides["partial_tp_fraction"] = float(val.strip("%")) / 100
+            elif key in ("htf", "htf-timeframe"):
+                if val: overrides["htf_timeframe"] = val
+            elif key in ("volume", "vol"):
+                overrides["volume_filter"] = True
+                if val: overrides["volume_factor"] = float(val)
+            elif key == "cooldown":
+                if val: overrides["sl_cooldown"] = int(val)
+            elif key in ("notrailing", "no-trailing"):
+                overrides["trailing_sl"] = False
+            elif key in ("nobreakeven", "no-breakeven"):
+                overrides["breakeven"] = False
+            elif key in ("nopartial", "no-partial"):
+                overrides["partial_tp"] = False
+            elif key in ("novol", "no-volume"):
+                overrides["volume_filter"] = False
+            elif key == "nohtf":
+                overrides["htf_timeframe"] = ""
+        except (ValueError, TypeError):
+            pass
+    return overrides
+
+
+def _call_start_api(base_url: str, symbol: str, overrides: dict | None = None) -> dict:
+    params = {
+        "sl": 0.03, "tp": 0.06, "fast": 9, "slow": 21, "timeframe": "5m",
+        "safety_buffer": 0.10,
+        "trailing_sl": False, "trailing_sl_pct": 0.02, "sl_cooldown": 3,
+        "volume_filter": False, "volume_factor": 1.2,
+        "breakeven": False, "breakeven_pct": 0.01,
+        "partial_tp": False, "partial_tp_fraction": 0.5,
+        "htf_timeframe": "", "htf_fast": 9, "htf_slow": 21,
+    }
     try:
         bots = {b["symbol"]: b for b in requests.get(f"{base_url}/api/bots", timeout=5).json()}
         if symbol in bots:
-            st        = bots[symbol].get("state", {})
-            sl        = float(st.get("sl_pct",       sl))
-            tp        = float(st.get("tp_pct",       tp))
-            fast      = int(float(st.get("fast_period", fast)))
-            slow      = int(float(st.get("slow_period", slow)))
-            timeframe = st.get("timeframe",           timeframe)
+            st = bots[symbol].get("state", {})
+            params["sl"]               = float(st.get("sl_pct",               params["sl"]))
+            params["tp"]               = float(st.get("tp_pct",               params["tp"]))
+            params["fast"]             = int(float(st.get("fast_period",       params["fast"])))
+            params["slow"]             = int(float(st.get("slow_period",       params["slow"])))
+            params["timeframe"]        = st.get("timeframe",                   params["timeframe"])
+            params["trailing_sl"]      = st.get("use_trailing_sl", "False").lower() == "true"
+            params["trailing_sl_pct"]  = float(st.get("trailing_sl_pct",      params["trailing_sl_pct"]))
+            params["sl_cooldown"]      = int(float(st.get("sl_cooldown_candles", params["sl_cooldown"])))
+            params["volume_filter"]    = st.get("volume_filter", "False").lower() == "true"
+            params["volume_factor"]    = float(st.get("volume_factor",         params["volume_factor"]))
+            params["breakeven"]        = st.get("breakeven_enabled", "False").lower() == "true"
+            params["breakeven_pct"]    = float(st.get("breakeven_trigger_pct", params["breakeven_pct"]))
+            params["partial_tp"]       = st.get("partial_tp_enabled", "False").lower() == "true"
+            params["partial_tp_fraction"] = float(st.get("partial_tp_fraction", params["partial_tp_fraction"]))
+            params["htf_timeframe"]    = st.get("htf_timeframe",               params["htf_timeframe"])
+            params["htf_fast"]         = int(float(st.get("htf_fast",          params["htf_fast"])))
+            params["htf_slow"]         = int(float(st.get("htf_slow",          params["htf_slow"])))
     except Exception:
         pass  # Fallback auf Defaults
 
+    if overrides:
+        params.update(overrides)
+
     try:
-        resp = requests.post(
-            f"{base_url}/api/bot/start",
-            json={"symbol": symbol, "timeframe": timeframe, "fast": fast, "slow": slow,
-                  "sl": sl, "tp": tp, "safety_buffer": 0.10},
-            timeout=10,
-        )
+        resp = requests.post(f"{base_url}/api/bot/start", json=params, timeout=10)
         resp.raise_for_status()
-        return {"ok": True, "symbol": symbol,
-                "params": {"sl": sl, "tp": tp, "fast": fast, "slow": slow, "timeframe": timeframe}}
+        return {"ok": True, "symbol": symbol, "params": params}
     except Exception as e:
         return {"ok": False, "symbol": symbol, "error": str(e)}
 

@@ -38,7 +38,7 @@ bot/
 ├── bot/
 │   ├── config.py            # Alle Konfigurationsparameter (dataclasses)
 │   ├── data_feed.py         # Marktdaten via CCXT (OHLCV, Balance, Orders)
-│   ├── strategy.py          # SMA-Crossover + RSI-Filter + ATR
+│   ├── strategy.py          # SMA-Crossover + RSI-Filter + ATR + HTF-Filter
 │   ├── regime.py            # ADX-basierte Regime-Erkennung (TREND/SIDEWAYS/VOLATILE)
 │   ├── risk.py              # Dynamisches Position Sizing
 │   ├── execution.py         # Order-Submit, Dry-Run, Post-Trade-Verify
@@ -106,56 +106,283 @@ nano .env
 
 ## Strategie
 
-Die Bots kombinieren drei Schichten:
+Die Bots kombinieren mehrere Filter-Schichten die nacheinander geprüft werden.
+Ein Signal muss **alle** aktivierten Filter passieren um ausgeführt zu werden.
+
+```
+OHLCV-Daten
+    │
+    ▼
+SMA-Crossover (BUY / SELL / HOLD)
+    │
+    ▼  ← RSI-Filter (blockiert Käufe bei überkauftem Markt)
+    │
+    ▼  ← HTF-Trend-Filter (blockiert Käufe gegen übergeordneten Trend)
+    │
+    ▼  ← Volumen-Filter (blockiert Signale bei unterdurchschnittlichem Volumen)
+    │
+    ▼  ← SL-Cooldown (blockiert Käufe kurz nach einem Stop-Loss)
+    │
+    ▼
+ORDER
+    │
+    ▼  ← Trailing-SL (SL folgt steigendem Kurs nach oben)
+    │
+    ▼  ← Breakeven-SL (SL auf Entry heben sobald genug Gewinn)
+    │
+    ▼  ← Partial-TP (bei erstem TP-Hit nur Teil verkaufen, Rest läuft weiter)
+```
+
+---
 
 ### 1. SMA-Crossover (Signal-Generierung)
+
 ```
 BUY  → Fast SMA (9) kreuzt Slow SMA (21) von unten nach oben
 SELL → Fast SMA (9) kreuzt Slow SMA (21) von oben nach unten
 HOLD → kein Crossover
 ```
 
+**`--fast N`** – Periode des schnellen SMA (Standard: `9`)
+- **Kleiner (z.B. 5):** Sehr reaktiv – erkennt Trends früher, erzeugt aber mehr Fehlsignale in seitwärts bewegenden Märkten.
+- **Größer (z.B. 15–20):** Träger – weniger Fehlsignale, steigt aber später ein und aus.
+- Faustregel: `fast` sollte ¼ bis ½ von `slow` betragen.
+
+**`--slow N`** – Periode des langsamen SMA (Standard: `21`)
+- **Kleiner (z.B. 12–15):** Kurzer Betrachtungszeitraum, mehr Crossovers, passt zu volatilen Coins.
+- **Größer (z.B. 50–200):** Klassische Trendfolge (50/200 = „Golden Cross"), sehr wenige aber zuverlässigere Signale. Für 5m-Timeframe eher ungeeignet.
+- Bekannte Kombinationen: `9/21` (Standard), `5/15` (Scalp), `7/18` (Agile), `12/26` (MACD-ähnlich), `21/55` (Swing).
+
+---
+
 ### 2. RSI-Filter (Signal-Qualität)
-Signale werden gefiltert wenn der Markt bereits überhitzt ist:
+
+Signale werden gefiltert wenn der Markt bereits überhitzt ist. Verhindert Käufe an Hochpunkten und Verkäufe an Tiefpunkten.
+
 ```
 BUY  wird blockiert wenn RSI > rsi_buy_max  (Standard: 65 – überkauft)
 SELL wird blockiert wenn RSI < rsi_sell_min (Standard: 35 – überverkauft)
 ```
 
-### 3. ATR-basiertes SL/TP (Risikomanagement)
-Stop-Loss und Take-Profit passen sich der aktuellen Volatilität an:
+**`rsi_buy_max`** – Obere RSI-Grenze für BUY-Signale (vom Supervisor gesetzt)
+- **50–55:** Sehr konservativ – kauft nur bei klar nicht-überkauftem Markt. Viele Signale werden geblockt, aber die verbleibenden sind qualitativ hochwertig.
+- **65 (Standard):** Ausgewogene Mitte – lässt moderate Aufwärtsmomente durch, blockiert klare Überhitzung.
+- **70–75:** Permissiv – kauft auch in überkauften Momenten. Nützlich in starken Trend-Märkten, riskant in Seitwärtsphasen.
+
+**`rsi_sell_min`** – Untere RSI-Grenze für SELL-Signale (vom Supervisor gesetzt)
+- **25–30:** Konservativ – verkauft kaum wenn der Markt bereits überverkauft ist (gut, um Panikverkäufe zu vermeiden).
+- **35 (Standard):** Standard-Schwelle.
+- **45–50:** Aggressiv – verkauft auch bei neutralem RSI.
+
+> Der RSI-Filter kann **nicht direkt** per CLI gesetzt werden. Der Supervisor passt ihn automatisch je nach Regime an (TREND: breiter; SIDEWAYS: enger; VOLATILE: sehr eng).
+
+---
+
+### 3. ATR-basiertes SL/TP
+
+Stop-Loss und Take-Profit passen sich der aktuellen Volatilität an.
+ATR (Average True Range) misst die durchschnittliche Kursbewegung der letzten 14 Candles.
+
 ```
-SL = entry − 1.5 × ATR(14)
-TP = entry + 2.5 × ATR(14)
+SL = entry − atr_sl_mult × ATR(14)
+TP = entry + atr_tp_mult × ATR(14)
 ```
-Bei zu wenig Daten: Fallback auf feste Prozentsätze (`--sl` / `--tp`).
+
+**`--sl N` / `--tp N`** – Fallback-Prozentsätze wenn ATR nicht berechenbar ist (zu wenig Daten beim Start)
+- `--sl 0.03` = 3% unter Entry → Stop-Loss
+- `--tp 0.06` = 6% über Entry → Take-Profit
+- Als Faustregel: TP sollte mindestens das 1.5-fache von SL sein (Chance:Risiko ≥ 1.5:1).
+
+**`atr_sl_mult`** – ATR-Multiplikator für Stop-Loss (Standard: `1.5`, vom Supervisor angepasst)
+- **0.8–1.0:** Sehr enger SL – wird in volatilen Märkten häufig ausgestoppt. Geeignet für ruhige, gut-trendende Märkte.
+- **1.5 (Standard):** Gibt dem Trade genug Raum für normale Kursschwankungen.
+- **2.0–3.0:** Weiter SL – der Verlust pro Trade ist größer, aber der Trade wird seltener vorzeitig gestoppt.
+
+**`atr_tp_mult`** – ATR-Multiplikator für Take-Profit (Standard: `2.5`, vom Supervisor angepasst)
+- **1.5–2.0:** Nimmt Gewinne schnell mit – gut in Seitwärtsmärkten, da der Kurs oft wieder zurückkommt.
+- **2.5 (Standard):** Ausgewogen. Risk:Reward = 2.5/1.5 ≈ 1.67:1.
+- **3.0–5.0:** Wartet auf große Bewegungen – gut in starken Trendbewegungen (VOLATILE-Regime), aber TP wird seltener erreicht.
+
+> Supervisor passt beide Multiplikatoren automatisch je nach Regime an (TREND: 1.5/2.5; SIDEWAYS: 1.2/1.8; VOLATILE: 2.0/3.5).
+
+---
 
 ### 4. Trailing Stop-Loss (optional)
-Mit `--trailing-sl` folgt der Stop-Loss dem steigenden Kurs nach oben – Gewinne werden automatisch abgesichert:
-```
-trail = aktueller_preis × (1 − trailing_sl_pct)   # Standard: 2%
-SL wird nur angehoben, nie abgesenkt
+
+```bash
+--trailing-sl [--trailing-sl-pct 0.02]
 ```
 
-### 5. Volumen-Filter (optional)
-Mit `--volume-filter` werden Crossover-Signale ignoriert, wenn das Handelsvolumen unterdurchschnittlich ist:
+Der SL wird automatisch nach oben gezogen wenn der Kurs steigt.
+**Wichtig:** Der SL wird nur angehoben, nie abgesenkt.
+
+```
+trail = aktueller_preis × (1 − trailing_sl_pct)
+Beispiel: Kurs steigt auf 100 EUR, pct=2% → SL wandert auf 98 EUR
+          Kurs fällt danach auf 98 → Stop-Loss ausgelöst
+```
+
+**`--trailing-sl-pct N`** – Abstand des Trailing-SL vom aktuellen Kurs (Standard: `0.02` = 2%)
+- **0.005–0.01 (0.5–1%):** Sehr enger Trailing-SL – der Bot sichert Gewinne sehr früh ab. Bei normaler Volatilität wird man häufig ausgestoppt bevor der Trend endet. Geeignet für sehr schnelle Scalp-Strategien.
+- **0.02 (2%, Standard):** Guter Mittelwert für 5m-Coins wie BTC/ETH – gibt dem Kurs Raum für normale Schwankungen.
+- **0.03–0.05 (3–5%):** Weiter Abstand – der Trade läuft länger durch, gibt aber mehr Gewinn zurück bevor der SL auslöst. Für volatile Coins (XRP, SNX) sinnvoll.
+- **> 0.05:** Zu weit – kein wesentlicher Unterschied zum festen SL.
+
+> **Tipp:** Trailing-SL kombiniert sich gut mit Breakeven-SL: Erst SL auf Entry schieben (Breakeven), dann mit Trailing-SL den Gewinn schützen.
+
+---
+
+### 5. Breakeven-SL (optional)
+
+```bash
+--breakeven [--breakeven-pct 0.01]
+```
+
+Sobald ein offener Trade einen Mindestgewinn erreicht, wird der Stop-Loss automatisch auf den Entry-Preis angehoben.
+Der Trade kann dann im schlimmsten Fall **nicht mehr mit Verlust** enden.
+
+```
+Beispiel: Entry bei 100 EUR, breakeven_pct=1%
+→ Kurs steigt auf 101 EUR (+1%) → SL wird auf 100 EUR gesetzt
+→ Selbst wenn der Kurs zurückfällt: kein Verlust
+```
+
+**`--breakeven-pct N`** – Mindestgewinn (als Dezimalzahl) der den Breakeven-SL auslöst (Standard: `0.01` = 1%)
+- **0.003–0.005 (0.3–0.5%):** Sehr früher Breakeven – der SL wird schon bei minimalem Gewinn auf Entry gesetzt. Viele Trades enden mit 0% statt kleinem Gewinn, aber das Verlustrisiko ist minimal.
+- **0.01 (1%, Standard):** Auslösung nach 1% Gewinn. Gibt dem Trade kurz Luft, setzt dann aber schnell die Absicherung.
+- **0.02–0.03 (2–3%):** Breakeven erst nach größerem Gewinn – der Trade kann zwischenzeitlich noch ins Minus fallen bevor der SL angepasst wird. Geeignet für volatile Coins mit weitem ATR-SL.
+- **> 0.05:** Zu hoch – der Kurs könnte den TP erreichen bevor der Breakeven ausgelöst wird.
+
+> **Kombination mit Trailing-SL:** Breakeven schützt vor Verlust, Trailing-SL sichert zusätzlich wachsende Gewinne. Empfehlung: `--breakeven --breakeven-pct 0.01 --trailing-sl --trailing-sl-pct 0.02`
+
+---
+
+### 6. Partial Take-Profit (optional)
+
+```bash
+--partial-tp [--partial-tp-fraction 0.5]
+```
+
+Beim ersten TP-Hit wird nur ein Teil der Position verkauft. Der Rest läuft als neuer Trade weiter mit:
+- **SL = Original-Entry** (Breakeven – kann nicht mehr mit Verlust enden)
+- **TP = Original-TP + gleicher Abstand** (nächste Zielstufe)
+
+```
+Beispiel: 1 BTC, Entry 90.000, SL 88.000, TP 93.000, Fraction 50%
+→ Kurs erreicht 93.000:
+  · 0.5 BTC werden verkauft (+3.000 EUR gesichert)
+  · 0.5 BTC laufen weiter: SL=90.000 (Breakeven), TP=96.000
+→ Kurs erreicht 96.000:
+  · restliche 0.5 BTC verkauft (+6.000 EUR aus dem Rest)
+```
+
+**`--partial-tp-fraction N`** – Anteil der Position der beim ersten TP verkauft wird (Standard: `0.5` = 50%)
+- **0.25–0.33 (25–33%):** Kleiner Teilverkauf – der Großteil der Position läuft weiter. Höheres Potential, aber du sicherst wenig ab wenn der Kurs danach dreht.
+- **0.5 (50%, Standard):** Ausgewogene Mischung – Hälfte gesichert, Hälfte läuft weiter.
+- **0.67–0.75 (67–75%):** Großteil verkauft – konservativ, kleiner Rest als "Free Trade" ohne Verlustrisiko.
+- **> 0.8:** Kaum sinnvoll – der Rest ist zu klein für eine sinnvolle weitere Position.
+
+> **Hinweis:** Der Remainder-Trade wird nur geöffnet wenn der Restbetrag über dem Mindestorderwert (15 EUR) liegt.
+
+---
+
+### 7. Multi-Timeframe HTF-Filter (optional)
+
+```bash
+--htf-timeframe 1h [--htf-fast 9] [--htf-slow 21]
+```
+
+BUY-Signale werden nur ausgeführt wenn der **übergeordnete Timeframe** (HTF = Higher TimeFrame) bullish ist.
+Bullish = Fast-SMA ≥ Slow-SMA im HTF-Chart.
+
+**SELL-Signale werden nicht gefiltert** – eine Position kann immer geschlossen werden.
+
+```
+Beispiel: Bot läuft auf 5m-Candles, htf_timeframe=1h
+→ 5m zeigt BUY-Signal
+→ 1h: Fast-SMA(9) < Slow-SMA(21) → übergeordneter Trend ist bearish
+→ BUY wird zu HOLD umgewandelt – kein Kauf
+```
+
+**`--htf-timeframe TF`** – Zeitrahmen für den Trendfilter
+- **`15m`:** Filterung gegen 15-Minuten-Trend. Sehr reaktiv, leichte Filterung. Sinnvoll wenn der Bot auf 1m oder 3m läuft.
+- **`1h` (empfohlen für 5m-Bots):** Gut ausbalanciert – filtert Käufe gegen den Stunden-Trend heraus. Reduziert Signale deutlich, erhöht aber die Trefferquote.
+- **`4h`:** Starke Filterung – kauft nur wenn der 4-Stunden-Chart im Aufwärtstrend ist. Sehr wenige, aber zuverlässigere Signale. Für moderate Haltezeiten.
+- **`1d`:** Maximale Filterung – kauft nur im täglichen Aufwärtstrend. Wenige Signale, ideal für Swing-Strategien.
+
+**`--htf-fast N / --htf-slow N`** – SMA-Perioden für die HTF-Trendbeurteilung (Standard: `9/21`)
+- Dieselbe Logik wie beim Haupt-SMA: Kleinere Werte = reaktiver, größere Werte = stabiler.
+- Standard `9/21` passt gut zu `1h` HTF. Für `4h` oder `1d` HTF kann `21/55` sinnvoller sein.
+
+> **Tipp:** Den HTF-Filter aktivieren wenn viele Fehlkäufe in Korrekturphasen auftreten. Er reduziert die Anzahl der Trades, verbessert aber das Verhältnis gewinnender zu verlierender Trades.
+
+---
+
+### 8. Volumen-Filter (optional)
+
+```bash
+--volume-filter [--volume-factor 1.2]
+```
+
+Ein Crossover-Signal wird nur dann ausgeführt wenn das Volumen der Crossover-Candle über dem Durchschnitt liegt.
+Verhindert Fehlsignale in Phasen mit geringer Marktbeteiligung.
+
 ```
 Signal nur wenn: letztes_volumen ≥ Avg(letzte 20 Candles) × volume_factor
 ```
-Verhindert Fehlsignale in dünnen Märkten ohne Marktbewegung.
 
-### 6. SL-Cooldown (optional)
-Nach einem Stop-Loss wartet der Bot N Candles (`--sl-cooldown 3`, Standard: 3 = 15min bei 5m) bevor er wieder kauft.
+**`--volume-factor N`** – Wie viel höher als der Durchschnitt das Volumen sein muss (Standard: `1.2`)
+- **1.0:** Minimale Anforderung – jedes Volumen über dem 20-Candle-Durchschnitt ist ausreichend. Sehr permissiv.
+- **1.2 (Standard):** Volumen muss 20% über Durchschnitt liegen. Filtert ruhige, bedeutungslose Crossovers heraus.
+- **1.5–2.0:** Streng – nur Signale mit deutlich erhöhtem Volumen. Weniger Trades, aber höhere Überzeugung dass eine echte Bewegung stattfindet.
+- **> 2.5:** Zu restriktiv – die meisten Signale werden blockiert, viele gute Einstiege werden verpasst.
+
+---
+
+### 9. SL-Cooldown (optional)
+
+```bash
+--sl-cooldown 3
+```
+
+Nach einem Stop-Loss wartet der Bot N Candles bevor er wieder ein BUY-Signal ausführt.
 Verhindert sofortigen Wiedereinstieg in einen weiter fallenden Markt.
 
+**`--sl-cooldown N`** – Anzahl Candles Wartezeit nach SL-Hit (Standard: `3`)
+- **0:** Kein Cooldown – sofortiger Wiederkauf möglich. Maximale Nutzung von Bounces, aber Gefahr von Mehrfach-SLs in Folge.
+- **3 (Standard):** 15 Minuten Pause bei 5m-Candles. Gibt dem Markt Zeit zu stabilisieren.
+- **5–10:** 25–50 Minuten Pause. Konservativer, verpasst ggf. schnelle Rebounds.
+- **20+:** Sehr langer Cooldown – sinnvoll nach starken Kurseinbrüchen um den Ausbruch zu warten.
+- Die Wartezeit in Minuten = `sl_cooldown × timeframe_minuten` (bei 5m: `3 × 5 = 15 min`).
+
+---
+
+### 10. Safety Buffer (Kapitalschutz)
+
+```bash
+--safety-buffer 0.10
+```
+
+**`--safety-buffer N`** – Anteil des Gesamtkapitals das niemals in Trades eingesetzt wird (Standard: `0.10` = 10%)
+- **0.05 (5%):** Aggressiver – fast das gesamte Kapital wird genutzt. Riskant wenn mehrere Bots gleichzeitig kaufen.
+- **0.10 (10%, Standard):** 10% Reserve bleiben immer übrig. Deckt Kraken-Gebühren und unerwartete Situationen ab.
+- **0.15–0.20:** Konservativ – weniger Kapital im Einsatz, geringere Rendite aber höherer Puffer.
+- Der Safety Buffer wird einmal auf die Gesamt-Balance angewendet, dann wird der Rest gleichmäßig auf alle aktiven Bots aufgeteilt.
+
+---
+
 ### Positionsgröße
+
 Das Kapital wird gleichmäßig auf alle aktiven Bots verteilt:
+
 ```
 usable    = balance_EUR × (1 − safety_buffer)
 per_bot   = usable / anzahl_aktive_bots
 trade_EUR = per_bot × quote_risk_fraction  (0.95)
 amount    = trade_EUR / aktueller_preis
 ```
+
+Je mehr Bots aktiv sind, desto kleiner jede einzelne Position.
 
 ---
 
@@ -172,6 +399,11 @@ Die Bots übernehmen die angepassten Parameter beim nächsten Loop-Durchlauf **o
 | **TREND** | ADX > 22, ATR% ≤ 3% | buy < 68, sell > 32 | 1.5× | 2.5× |
 | **SIDEWAYS** | ADX ≤ 22, ATR% ≤ 3% | buy < 60, sell > 40 | 1.2× | 1.8× |
 | **VOLATILE** | ATR% > 3% | buy < 55, sell > 45 | 2.0× | 3.5× |
+
+**Wann welches Regime vorteilhaft ist:**
+- **TREND:** Der Bot nutzt breitere RSI-Fenster und mittlere SL/TP-Multiplikatoren – lässt Trends laufen.
+- **SIDEWAYS:** Engere RSI-Grenzen verhindern Fehlsignale in choppy Märkten; schnellere Gewinnmitnahme.
+- **VOLATILE:** Sehr enge RSI-Fenster (nur starke Signale), weite SL/TP um normale Ausschläge zu überstehen.
 
 ### Multi-Varianten-Optimierung
 
@@ -196,45 +428,22 @@ Volumen-Filter: ❌ empfohlen  (aktuell: ❌)
 → Neustart mit: --trailing-sl  um zu übernehmen
 ```
 
+### Regime-Persistenz / Warmstart
+
+Nach jedem Supervisor-Durchlauf speichert der Bot die tatsächlich verwendeten Parameter
+als `effective_*`-Keys in der DB. Bei einem Neustart werden diese sofort geladen,
+ohne auf den nächsten Supervisor-Zyklus (bis zu 5 Minuten) warten zu müssen.
+
 ### Cross-Bot-Learning
 
-Nach jedem Optimierungsdurchlauf prüft der Supervisor, ob die beste Strategie eines Coins
-auch auf anderen Coins im **gleichen Regime** besser abschneidet.
-Wenn ja, wird die Strategie übernommen und als `"Agile→BTC"` gekennzeichnet.
-
-```
-BTC (TREND): Agile 7/18 → +3.2%
-XRP (TREND): Swing 21/55 → +0.8%
-→ XRP übernimmt "Agile" von BTC  (validiert auf XRP-Candles: +2.1% > +0.8%)
-```
-
-### Supervisor-Erfahrung (supervisor_log)
-
-Jeder Durchlauf wird append-only in `supervisor_log` persistiert (eine Tabelle pro Bot-DB):
-
-| Spalte | Inhalt |
-|--------|--------|
-| `regime` | TREND / SIDEWAYS / VOLATILE |
-| `adx` | ADX-Wert zum Zeitpunkt |
-| `strategy_name` | z.B. `Agile`, `Swing`, `Agile→BTC` |
-| `fast / slow` | Gewählte SMA-Parameter |
-| `sim_pnl` | Simulierter P&L (Backtest) |
-| `source` | `own` oder `cross:BTC` |
-| `use_trailing_sl` | Trailing SL aktiv bei dieser Variante |
-| `volume_filter` | Volumen-Filter aktiv bei dieser Variante |
-
-Abfrage via Telegram: `/supervisor` (Übersicht) oder `/supervisor BTC/EUR` (Verlauf).
+Wenn BTC im Trend-Regime eine bessere Strategie findet als XRP (ebenfalls Trend), wird
+die Strategie auf XRP übertragen und dort validiert bevor sie übernommen wird.
 
 ### Supervisor starten
 
 ```bash
-# Testen (liest DBs, kein Schreiben)
-botvenv/bin/python supervisor.py --dry-run
-
-# Live (alle 5 Minuten)
-botvenv/bin/python supervisor.py
-
-# oder via systemd:
+botvenv/bin/python supervisor.py --dry-run   # Testen (kein Schreiben)
+botvenv/bin/python supervisor.py             # Live
 sudo systemctl start tradingbot-supervisor
 journalctl -u tradingbot-supervisor -f
 ```
@@ -254,29 +463,72 @@ journalctl -u tradingbot-supervisor -f
 # Dry-Run – kein echter Handel, zum Testen
 botvenv/bin/python main.py --symbol BTC/EUR --dry-run
 
-# Live
+# Standard Live
 botvenv/bin/python main.py --symbol BTC/EUR
-botvenv/bin/python main.py --symbol ETH/EUR --sl 0.025 --tp 0.05
+
+# Konservativ (enger SL, Breakeven-Absicherung, HTF-Filter)
+botvenv/bin/python main.py --symbol BTC/EUR \
+  --sl 0.02 --tp 0.04 \
+  --breakeven --breakeven-pct 0.01 \
+  --htf-timeframe 1h
+
+# Aggressiv (Trending-Markt, Trailing + Partial-TP)
+botvenv/bin/python main.py --symbol ETH/EUR \
+  --trailing-sl --trailing-sl-pct 0.02 \
+  --partial-tp --partial-tp-fraction 0.5
+
+# Alles kombiniert
+botvenv/bin/python main.py --symbol XRP/EUR \
+  --trailing-sl --trailing-sl-pct 0.02 \
+  --breakeven --breakeven-pct 0.01 \
+  --partial-tp --partial-tp-fraction 0.5 \
+  --htf-timeframe 1h \
+  --volume-filter --volume-factor 1.2 \
+  --sl-cooldown 3
 ```
 
-### CLI-Optionen
+### Alle CLI-Optionen
+
+**Basis-Strategie:**
 
 | Option | Standard | Beschreibung |
 |--------|----------|--------------|
 | `--symbol` | – | Coin-Paar, z.B. `BTC/EUR` (Pflicht) |
-| `--timeframe` | `5m` | Kerzen-Intervall |
-| `--fast` | `9` | Fast-SMA-Periode |
-| `--slow` | `21` | Slow-SMA-Periode |
-| `--sl` | `0.03` | Stop-Loss Fallback (3%), wenn ATR nicht berechenbar |
-| `--tp` | `0.06` | Take-Profit Fallback (6%) |
-| `--safety-buffer` | `0.10` | Anteil des Kapitals der nie angefasst wird |
-| `--startup-delay` | `0` | Verzögerter Start in Sekunden (Rate-Limit staffeln) |
+| `--timeframe` | `5m` | Kerzen-Intervall: `1m` `3m` `5m` `15m` `1h` |
+| `--fast N` | `9` | Fast-SMA-Periode (empfohlen: 5–21) |
+| `--slow N` | `21` | Slow-SMA-Periode (empfohlen: 15–55, muss > fast) |
+| `--sl N` | `0.03` | Fallback Stop-Loss wenn ATR nicht berechenbar (3%) |
+| `--tp N` | `0.06` | Fallback Take-Profit wenn ATR nicht berechenbar (6%) |
+| `--safety-buffer N` | `0.10` | Kapital-Reserve die nie eingesetzt wird (10%) |
+| `--startup-delay N` | `0` | Sekunden vor erstem API-Call (Rate-Limit bei Mehrfach-Start) |
+| `--dry-run` | – | Kein echter Handel – Orders werden simuliert |
+
+**Verlustschutz:**
+
+| Option | Standard | Wert-Effekt |
+|--------|----------|-------------|
 | `--trailing-sl` | – | Trailing Stop-Loss aktivieren |
-| `--trailing-sl-pct` | `0.02` | Abstand des Trailing-SL (2% = 2% unter aktuellem Kurs) |
-| `--sl-cooldown` | `3` | Candles Wartezeit nach SL-Hit bevor nächster Kauf |
+| `--trailing-sl-pct N` | `0.02` | Abstand: kleiner = enger am Kurs (mehr Ausstopp-Risiko), größer = mehr Spielraum |
+| `--sl-cooldown N` | `3` | Candles Pause nach SL: `0`=keiner, `3`=15min, `10`=50min (bei 5m) |
+| `--breakeven` | – | Breakeven-SL aktivieren |
+| `--breakeven-pct N` | `0.01` | Trigger: kleiner = SL früher auf Entry (konservativer), größer = erst nach mehr Gewinn |
+
+**Gewinnoptimierung:**
+
+| Option | Standard | Wert-Effekt |
+|--------|----------|-------------|
+| `--partial-tp` | – | Partial Take-Profit aktivieren |
+| `--partial-tp-fraction N` | `0.5` | Anteil: `0.25`=25% verkaufen, `0.5`=50/50, `0.75`=75% sichern |
+
+**Signal-Filter:**
+
+| Option | Standard | Wert-Effekt |
+|--------|----------|-------------|
 | `--volume-filter` | – | Volumen-Filter aktivieren |
-| `--volume-factor` | `1.2` | Signal nur bei ≥ 1.2× Durchschnittsvolumen |
-| `--dry-run` | – | Kein echter Handel |
+| `--volume-factor N` | `1.2` | Schwelle: `1.0`=nur über Avg, `1.5`=50% über Avg, `2.0`=doppeltes Avg |
+| `--htf-timeframe TF` | – | HTF-Timeframe: `15m` `1h` `4h` `1d` |
+| `--htf-fast N` | `9` | SMA-Periode für HTF-Trend-Beurteilung (schnell) |
+| `--htf-slow N` | `21` | SMA-Periode für HTF-Trend-Beurteilung (langsam) |
 
 ---
 
@@ -290,45 +542,59 @@ botvenv/bin/python web/app.py
 - Zeigt alle Bot-Instanzen automatisch (liest alle `db/*.db`)
 - **Auto-Refresh**: 60s (Seite), 5s (Cards live via `/api/bots`)
 - **Regime-Badge** pro Bot: TREND / SIDEWAYS / VOLATILE mit Farbe
-- **Bot-Verwaltung**: Hinzufügen / Starten / Stoppen / Löschen im Browser
 - **SL/TP editierbar**: ± Buttons mit adaptiver Schrittweite (~1.50€ P&L pro Klick)
 - **P&L-Anzeige**: Netto nach Kraken-Gebühren (0.26% pro Order)
-- **RSI-Anzeige**: Farbe je nach Überkauft/Überverkauft-Status
+
+### Bot hinzufügen
+
+Im Dialog **+ Bot hinzufügen** gibt es zwei Bereiche:
+
+**Basis-Einstellungen** (immer sichtbar):
+- Symbol (Markt-Suche mit Autocomplete)
+- Timeframe, Safety Buffer
+- Fast MA, Slow MA
+- Stop-Loss %, Take-Profit %
+- Dry Run
+
+**⚙ Erweiterte Einstellungen** (ausklappbar):
+
+| Feld | Standard | Beschreibung |
+|------|----------|--------------|
+| Trailing-SL ☑ | aus | Checkbox aktiviert den Trailing-SL |
+| Abstand % | 2% | Wird aktiv wenn Checkbox gesetzt |
+| SL-Cooldown | 3 | Candles Pause nach Stop-Loss |
+| Volumen-Filter ☑ | aus | Checkbox aktiviert den Filter |
+| Faktor | 1.2 | Wird aktiv wenn Checkbox gesetzt |
+| Breakeven-SL ☑ | aus | Checkbox aktiviert Breakeven-SL |
+| Trigger % | 1% | Wird aktiv wenn Checkbox gesetzt |
+| Partial-TP ☑ | aus | Checkbox aktiviert Partial Take-Profit |
+| Anteil % | 50% | Wird aktiv wenn Checkbox gesetzt |
+| HTF-Timeframe | – | Dropdown: deaktiviert / 15m / 1h / 4h / 1d |
+| HTF Fast SMA | 9 | Periode für HTF-Trend-Beurteilung |
+| HTF Slow SMA | 21 | Periode für HTF-Trend-Beurteilung |
+
+Beim **▶ Starten** (Wiederstart eines gestoppten Bots aus der Card) werden alle gespeicherten Feature-Flags automatisch wiederhergestellt.
 
 ---
 
 ## systemd (Raspberry Pi – empfohlen)
 
 ```bash
-# Einmalig einrichten
 bash systemd/install.sh
-
-# Alles starten (Bots + Web + Supervisor + News-Agent)
 sudo systemctl start tradingbot.target
-
-# Einzelne Services
-sudo systemctl start tradingbot-supervisor
-sudo systemctl start news-agent
-
-# Status
 sudo systemctl status 'tradingbot@*'
-sudo systemctl status tradingbot-supervisor
-
-# Logs
 journalctl -u tradingbot@BTC_EUR -f
-journalctl -u tradingbot-web -f
-journalctl -u tradingbot-supervisor -f
-journalctl -u news-agent -f
 ```
 
 ### Bot-Konfiguration (`bot.conf.d/`)
 
-Jede Datei `SYMBOL.conf` aktiviert eine Bot-Instanz beim systemd-Start:
-
 ```ini
 # bot.conf.d/BTC_EUR.conf
 BOT_SYMBOL=BTC/EUR
-BOT_ARGS=--timeframe 5m --fast 9 --slow 21 --sl 0.02 --tp 0.04 --safety-buffer 0.10 --startup-delay 20
+BOT_ARGS=--timeframe 5m --fast 9 --slow 21 --sl 0.02 --tp 0.04 \
+         --safety-buffer 0.10 --startup-delay 20 \
+         --trailing-sl --trailing-sl-pct 0.02 \
+         --breakeven --breakeven-pct 0.01
 ```
 
 Die `--startup-delay` Werte staffeln API-Calls beim gleichzeitigen Start:
@@ -353,7 +619,6 @@ Der Bot kann eine offene Position automatisch aufstocken (Pyramiding), wenn alle
 | Bisherige Nachkäufe im Trade | 0 (max. 1 Nachkauf pro Trade) |
 
 **Nachkauf-Größe:** 25% der normalen Positionsgröße.
-**Nach dem Kauf:** Gewichteter Avg-Entry, neue SL/TP werden berechnet und in der DB aktualisiert.
 
 ```
 Offene Position: 0.01 BTC @ 85.000 EUR  (+2.3%)
@@ -367,14 +632,13 @@ Regime:          TREND
 
 ## Trade-Benachrichtigungen
 
-Alle Kauf-/Verkaufs-Events werden automatisch per Telegram gemeldet:
-
 | Event | Nachricht |
 |-------|-----------|
 | Kauf | 🟢 KAUF BTC/EUR – Menge @ Preis · SL / TP mit % |
 | Verkauf (Signal) | 📉 VERKAUF BTC/EUR – Menge @ Preis |
 | Stop-Loss | 🛑 STOP-LOSS BTC/EUR – P&L netto |
 | Take-Profit | 💰 TAKE-PROFIT BTC/EUR – P&L netto |
+| Partial TP | 💰 TAKE-PROFIT (Partial) – Teilbetrag @ Preis, Rest läuft weiter |
 | Pyramid | 🔺 NACHKAUF BTC/EUR – neuer Avg-Entry |
 
 ---
@@ -382,9 +646,9 @@ Alle Kauf-/Verkaufs-Events werden automatisch per Telegram gemeldet:
 ## News-Agent
 
 Überwacht Krypto-News aus 10+ Quellen, berechnet Sentiment-Scores
-und sendet bei relevanten Ereignissen Telegram-Alerts mit Inline-Buttons zur Bot-Steuerung.
+und sendet bei relevanten Ereignissen Telegram-Alerts mit Inline-Buttons.
 
-### Filter-Pipeline (in Reihenfolge)
+### Filter-Pipeline
 
 ```
 gefetcht → [Qualität] → [Alter] → [URL-Dedup] → [Titel-Dedup] → [Relevanz] → [Schwelle] → Alert
@@ -397,20 +661,7 @@ gefetcht → [Qualität] → [Alter] → [URL-Dedup] → [Titel-Dedup] → [Rele
 | URL-Dedup | 24h | Gleiche URL nicht erneut alerten |
 | Titel-Dedup | 4h / 50% | Gleiche Story von anderen Outlets unterdrücken (Jaccard) |
 | Relevanz | – | Muss Coin-Keyword oder Watchword enthalten |
-| Schwelle | 0.5 | `|sentiment_score|` muss Schwelle überschreiten |
-
-### Quellen
-
-**RSS-Feeds (kostenlos):**
-CoinTelegraph · Decrypt · CoinDesk · Bitcoin Magazine · Crypto Slate ·
-Blockworks · NewsBTC · CryptoNews · Reddit r/CryptoCurrency · Reddit r/Bitcoin
-
-**Google News RSS (kostenlos):**
-bitcoin · crypto regulation · cryptocurrency hack · ethereum · trump crypto ·
-XRP ripple SEC · crypto ETF approval · DeFi exploit · bitcoin whale
-
-**API (optional):**
-CryptoPanic (`CRYPTOPANIC_API_KEY`) · Twitter/X (`TWITTER_BEARER_TOKEN`)
+| Schwelle | 0.5 | `\|sentiment_score\|` muss Schwelle überschreiten |
 
 ### Sentiment-Scoring
 
@@ -420,15 +671,9 @@ CryptoPanic (`CRYPTOPANIC_API_KEY`) · Twitter/X (`TWITTER_BEARER_TOKEN`)
 ### News-Agent starten
 
 ```bash
-# Testen
-botvenv/bin/python news_agent.py --dry-run --once
-
-# Telegram-Verbindung testen
-botvenv/bin/python news_agent.py --test-telegram
-
-# Live
-botvenv/bin/python news_agent.py
-# oder:
+botvenv/bin/python news_agent.py --dry-run --once   # Testen
+botvenv/bin/python news_agent.py --test-telegram     # Verbindung testen
+botvenv/bin/python news_agent.py                     # Live
 sudo systemctl start news-agent
 ```
 
@@ -442,37 +687,89 @@ sudo systemctl start news-agent
 | `/holdings` | Alle Coins auf Kraken (Menge × Preis, sortiert nach EUR-Wert) |
 | `/supervisor` | Supervisor-Übersicht: letztes Regime/Strategie/Sim-P&L pro Bot |
 | `/supervisor BTC/EUR` | Detailverlauf: Regime-Verteilung, Top-Strategien, Cross-Bot-Events |
-| `/params BTC/EUR` | Parameter eines Bots: SMA, RSI, ATR, Regime, Fallback SL/TP |
-| `/start_bot BTC/EUR` | Bot starten |
+| `/sentiment BTC/EUR` | Aktueller News-Sentiment für einen Coin |
+| `/news` | 10 stärkste News der letzten 48h |
+| `/news BTC/EUR` | 5 neueste News für diesen Coin |
+| `/params BTC/EUR` | Parameter: SMA, RSI, ATR, Regime, Fallback SL/TP, alle Feature-Flags |
+| `/start_bot BTC/EUR [params]` | Bot starten (ohne params: gespeicherte Werte; mit params: Override) |
 | `/stop_bot BTC/EUR` | Bot stoppen |
 | `/stop_all` | Alle laufenden Bots sofort stoppen |
-| `/buy BTC/EUR` | Force-BUY beim nächsten Loop (manueller Kauf) |
-| `/sell BTC/EUR` | Force-SELL beim nächsten Loop (Position schließen) |
-| `/set_sl BTC/EUR 2.0` | Stop-Loss auf 2% unter Entry-Preis setzen |
-| `/set_tp BTC/EUR 4.0` | Take-Profit auf 4% über Entry-Preis setzen |
+| `/buy BTC/EUR` | Force-BUY beim nächsten Loop |
+| `/sell BTC/EUR` | Force-SELL beim nächsten Loop |
+| `/set_sl BTC/EUR 2.0` | Stop-Loss auf 2% setzen |
+| `/set_tp BTC/EUR 4.0` | Take-Profit auf 4% setzen |
 
-Alle Befehle funktionieren auch als **Freitext** ohne `/` – der Bot erkennt Intents per Regex:
-`status` · `portfolio` · `rendite` · `holdings` · `erfahrung` · `stoppe BTC` · `starte ETH` · `kauf BTC` · `sl BTC 2`
+### `/start_bot` mit Inline-Parametern
+
+```
+/start_bot BTC/EUR                     → startet mit gespeicherten Werten aus DB
+/start_bot BTC/EUR sl=2 tp=4           → SL 2%, TP 4%
+/start_bot BTC/EUR trailing breakeven  → Trailing-SL + Breakeven aktivieren
+/start_bot BTC/EUR trailing=1.5        → Trailing-SL mit 1.5% Abstand
+/start_bot BTC/EUR htf=1h              → HTF-Filter auf 1h aktivieren
+/start_bot BTC/EUR partial=60          → Partial-TP, 60% beim ersten Hit verkaufen
+/start_bot BTC/EUR volume=1.5          → Volumen-Filter, Faktor 1.5
+/start_bot BTC/EUR cooldown=5          → 5 Candles SL-Cooldown
+/start_bot BTC/EUR notrailing nohtf    → Features deaktivieren
+```
+
+**Parametersyntax:**
+
+| Schlüsselwort | Beispiel | Beschreibung |
+|---------------|---------|--------------|
+| `sl=N` | `sl=2` | Stop-Loss Fallback in % |
+| `tp=N` | `tp=4` | Take-Profit Fallback in % |
+| `fast=N` / `slow=N` | `fast=7 slow=18` | SMA-Perioden |
+| `tf=TF` | `tf=15m` | Timeframe |
+| `trailing` / `trailing=N` | `trailing=2` | Trailing-SL (mit Abstand in %) |
+| `breakeven` / `breakeven=N` | `breakeven=1` | Breakeven-SL (mit Trigger in %) |
+| `partial` / `partial=N` | `partial=50` | Partial-TP (mit Anteil in %) |
+| `htf=TF` | `htf=1h` | HTF-Timeframe |
+| `volume` / `volume=N` | `volume=1.3` | Volumen-Filter (mit Faktor) |
+| `cooldown=N` | `cooldown=5` | SL-Cooldown in Candles |
+| `notrailing` | – | Trailing-SL deaktivieren |
+| `nobreakeven` | – | Breakeven-SL deaktivieren |
+| `nopartial` | – | Partial-TP deaktivieren |
+| `novol` | – | Volumen-Filter deaktivieren |
+| `nohtf` | – | HTF-Filter deaktivieren |
+
+Bestätigung zeigt alle aktiven Features:
+```
+✅ BTC/EUR gestartet.
+5m | Fast 9 | Slow 21 | SL 2.0% | TP 4.0%
+Features: Trailing 1.5% · Breakeven 1.0% · HTF 1h
+```
+
+Alle Befehle funktionieren auch als **Freitext** ohne `/`:
+`status` · `portfolio` · `rendite` · `holdings` · `stoppe BTC` · `starte ETH` · `kauf BTC` · `sl BTC 2`
 
 ### Alert-Inline-Buttons
 
 | Button | Wann | Aktion |
 |--------|------|--------|
 | `🛑 BTC/EUR stoppen` | Bearish-Alert, Bot läuft | POST /api/bot/stop |
-| `▶ ETH/EUR starten` | Bullish-Alert, Bot gestoppt | POST /api/bot/start |
+| `▶ ETH/EUR starten` | Bullish-Alert, Bot gestoppt | POST /api/bot/start (gespeicherte Params) |
 | `✅ Ignorieren` | Immer | Alert als dismissed markieren (24h Cooldown) |
+
+---
+
+## Auto-Cleanup
+
+Beim Start und täglich löscht der Bot automatisch alte Einträge aus der Datenbank:
+- **`orders`-Tabelle:** Einträge älter als `cleanup_days` (Standard: 30 Tage) werden gelöscht.
+- **`errors`-Tabelle:** Einträge älter als `cleanup_days` werden gelöscht.
+- **`trades`-Tabelle:** Wird **niemals** gelöscht (vollständige Trade-Historie).
+
+Der `cleanup_days`-Wert ist in `RiskConfig` gesetzt (Standard: `30`). Bei sehr aktiven Bots und begrenztem SD-Karten-Speicher kann der Wert auf 14 oder 7 reduziert werden.
 
 ---
 
 ## Remote-Zugriff via WireGuard VPN
 
 ```bash
-# VPN-Client hinzufügen
-pivpn add
-pivpn -qr <Name>   # QR-Code für Handy
-
-# Status
-sudo wg show
+pivpn add          # VPN-Client hinzufügen
+pivpn -qr <Name>   # QR-Code für Handy anzeigen
+sudo wg show       # Verbindungsstatus
 ```
 
 Nach VPN-Verbindung: `http://<pi-vpn-ip>:5001` im Browser.
@@ -484,6 +781,6 @@ Nach VPN-Verbindung: `http://<pi-vpn-ip>:5001` im Browser.
 - Kraken API-Keys mit minimalen Rechten (kein Withdraw)
 - `.env` ist gitignored – niemals committen
 - **Circuit Breaker**: Bot stoppt nach 5 konsekutiven Fehlern automatisch
-- `NoNewPrivileges=true` in Bot-Services (`tradingbot@.service`); im Web-Service entfernt (sonst blockiert polkit/sudo)
-- `/etc/sudoers.d/tradingbot`: User `xxx` darf `systemctl stop|start|restart tradingbot@*` ohne Passwort (für Dashboard-Steuerung)
+- `NoNewPrivileges=true` in Bot-Services
+- `/etc/sudoers.d/tradingbot`: User darf `systemctl stop|start|restart tradingbot@*` ohne Passwort
 - Supervisor schreibt nur `supervisor_*`-Keys in Bot-DBs, greift nie in Orders ein
