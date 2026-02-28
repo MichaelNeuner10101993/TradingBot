@@ -25,15 +25,12 @@ class DataFeed:
         self.cfg = bot_cfg
 
     @retry_backoff(retries=3, base_delay=2.0, exceptions=(ccxt.NetworkError,), no_retry=(ccxt.DDoSProtection,))
-    def fetch_ohlcv(self) -> list[list]:
-        """Gibt OHLCV-Candles zurück. Limit = slow + Puffer."""
-        limit = max(self.cfg.slow_period + 10, 100)
-        candles = self.ex.fetch_ohlcv(
-            self.cfg.symbol,
-            timeframe=self.cfg.timeframe,
-            limit=limit,
-        )
-        log.debug(f"OHLCV: {len(candles)} Candles geladen ({self.cfg.symbol} {self.cfg.timeframe})")
+    def fetch_ohlcv(self, timeframe: str | None = None, limit: int | None = None) -> list[list]:
+        """Gibt OHLCV-Candles zurück. Optionale Parameter überschreiben Bot-Konfiguration (für HTF-Filter)."""
+        tf  = timeframe or self.cfg.timeframe
+        lim = limit or max(self.cfg.slow_period + 10, 100)
+        candles = self.ex.fetch_ohlcv(self.cfg.symbol, timeframe=tf, limit=lim)
+        log.debug(f"OHLCV: {len(candles)} Candles geladen ({self.cfg.symbol} {tf})")
         return candles
 
     @retry_backoff(retries=3, base_delay=2.0, exceptions=(ccxt.NetworkError,), no_retry=(ccxt.DDoSProtection,))

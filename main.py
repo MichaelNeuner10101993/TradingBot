@@ -10,6 +10,7 @@ import argparse
 import random
 import signal as _signal
 import time
+import uuid
 import ccxt
 
 import os
@@ -17,11 +18,11 @@ from datetime import datetime, timezone
 from bot.config import ExchangeConfig, BotConfig, RiskConfig, OpsConfig
 from bot.ops import setup_logging, CircuitBreaker
 from bot.data_feed import DataFeed, build_exchange
-from bot.strategy import get_signal
+from bot.strategy import get_signal, is_htf_bullish
 from bot.risk import RiskManager
 from bot.execution import Executor
 from bot.persistence import StateDB, utcnow
-from bot.sl_tp import SlTpMonitor, calc_levels, update_trailing_sl
+from bot.sl_tp import SlTpMonitor, calc_levels, update_trailing_sl, check_breakeven
 from bot import pyramid, notify
 
 
@@ -49,6 +50,13 @@ def parse_args():
     p.add_argument("--sl-cooldown",    type=int,   default=None,  help="Cooldown-Candles nach SL-Hit (default: 3)")
     p.add_argument("--volume-filter",  action="store_true",       help="Volumen-Filter aktivieren")
     p.add_argument("--volume-factor",  type=float, default=None,  help="Volumen-Faktor (default: 1.2)")
+    p.add_argument("--breakeven",         action="store_true",        help="Breakeven-SL aktivieren")
+    p.add_argument("--breakeven-pct",     type=float, default=None,   help="Breakeven-Trigger %% (default: 0.01 = 1%%)")
+    p.add_argument("--partial-tp",        action="store_true",        help="Partial Take-Profit aktivieren")
+    p.add_argument("--partial-tp-fraction", type=float, default=None, help="Anteil für Partial-TP (default: 0.5 = 50%%)")
+    p.add_argument("--htf-timeframe",     default="",                 help="HTF-Timeframe für Trendfilter (z.B. 1h), leer = deaktiviert")
+    p.add_argument("--htf-fast",          type=int,   default=None,   help="HTF Fast-SMA-Periode (default: 9)")
+    p.add_argument("--htf-slow",          type=int,   default=None,   help="HTF Slow-SMA-Periode (default: 21)")
     return p.parse_args()
 
 
@@ -83,6 +91,13 @@ def main():
     if args.sl_cooldown is not None:        risk_cfg.sl_cooldown_candles = args.sl_cooldown
     if args.volume_filter:                  risk_cfg.volume_filter      = True
     if args.volume_factor is not None:      risk_cfg.volume_factor      = args.volume_factor
+    if args.breakeven:                      risk_cfg.breakeven_enabled  = True
+    if args.breakeven_pct is not None:      risk_cfg.breakeven_trigger_pct = args.breakeven_pct
+    if args.partial_tp:                     risk_cfg.partial_tp_enabled = True
+    if args.partial_tp_fraction is not None: risk_cfg.partial_tp_fraction = args.partial_tp_fraction
+    if args.htf_timeframe:                  bot_cfg.htf_timeframe       = args.htf_timeframe
+    if args.htf_fast is not None:           bot_cfg.htf_fast            = args.htf_fast
+    if args.htf_slow is not None:           bot_cfg.htf_slow            = args.htf_slow
 
     # DB-Verzeichnis für Bot-Zählung
     risk_cfg.db_dir = os.path.dirname(ops_cfg.db_path) or "db"
@@ -109,6 +124,23 @@ def main():
     )
 
     db       = StateDB(ops_cfg.db_path)
+
+    # Feature 5: Warmstart – letzte effektive Parameter aus DB laden wenn Supervisor noch nicht lief
+    _warmstart = db.get_all_state()
+    if not _warmstart.get("supervisor_regime") and _warmstart.get("effective_fast"):
+        log.info("Warmstart: übernehme letzte effektive Parameter aus DB")
+        if not _cli_trailing_set:
+            bot_cfg.fast_period      = int(_warmstart.get("effective_fast",  bot_cfg.fast_period))
+            bot_cfg.slow_period      = int(_warmstart.get("effective_slow",  bot_cfg.slow_period))
+            risk_cfg.rsi_buy_max     = float(_warmstart.get("effective_rsi_buy_max",  risk_cfg.rsi_buy_max))
+            risk_cfg.rsi_sell_min    = float(_warmstart.get("effective_rsi_sell_min", risk_cfg.rsi_sell_min))
+            risk_cfg.atr_sl_mult     = float(_warmstart.get("effective_atr_sl_mult",  risk_cfg.atr_sl_mult))
+            risk_cfg.atr_tp_mult     = float(_warmstart.get("effective_atr_tp_mult",  risk_cfg.atr_tp_mult))
+
+    # Feature 4: Initialer Cleanup beim Start
+    db.cleanup_old_records(days=risk_cfg.cleanup_days)
+    db.set_state("last_cleanup", datetime.now(timezone.utc).isoformat())
+
     exchange = build_exchange(exchange_cfg)
     feed     = DataFeed(exchange, bot_cfg)
     risk     = RiskManager(risk_cfg)
@@ -124,6 +156,13 @@ def main():
                 candles     = feed.fetch_ohlcv()
                 balance     = feed.fetch_balance()
                 open_orders = feed.fetch_open_orders()
+                # HTF-Candles für Multi-Timeframe-Filter (Feature 3)
+                candles_htf = None
+                if bot_cfg.htf_timeframe:
+                    candles_htf = feed.fetch_ohlcv(
+                        timeframe=bot_cfg.htf_timeframe,
+                        limit=bot_cfg.htf_slow + 10,
+                    )
 
                 # 2) Supervisor-Anpassungen einlesen (falls Supervisor läuft)
                 _sv = db.get_all_state()
@@ -156,6 +195,15 @@ def main():
                     except (ValueError, TypeError) as e:
                         log.warning(f"Supervisor-State ungültig: {e}")
 
+                # Feature 5: effektiv genutzte Parameter persistieren (Regime-Persistenz / Warmstart)
+                db.set_state("effective_fast",         str(bot_cfg.fast_period))
+                db.set_state("effective_slow",         str(bot_cfg.slow_period))
+                db.set_state("effective_regime",       _sv.get("supervisor_regime", ""))
+                db.set_state("effective_rsi_buy_max",  str(risk_cfg.rsi_buy_max))
+                db.set_state("effective_rsi_sell_min", str(risk_cfg.rsi_sell_min))
+                db.set_state("effective_atr_sl_mult",  str(risk_cfg.atr_sl_mult))
+                db.set_state("effective_atr_tp_mult",  str(risk_cfg.atr_tp_mult))
+
                 # 3) Signal berechnen (inkl. RSI- + Volumen-Filter)
                 signal, last_price, rsi_val = get_signal(
                     candles,
@@ -168,6 +216,12 @@ def main():
                     volume_factor=risk_cfg.volume_factor,
                 )
                 rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
+
+                # Feature 3: HTF-Trend-Filter (BUY nur wenn höherer Timeframe bullish)
+                if signal == "BUY" and candles_htf is not None:
+                    if not is_htf_bullish(candles_htf, bot_cfg.htf_fast, bot_cfg.htf_slow):
+                        log.info(f"HTF-Filter ({bot_cfg.htf_timeframe}): BUY → HOLD")
+                        signal = "HOLD"
 
                 # Force-Signal vom Telegram / Dashboard? (überschreibt berechnetes Signal)
                 _force = _sv.get("force_signal", "")
@@ -191,26 +245,64 @@ def main():
                             db.update_trade_sltp(trade["client_id"], new_sl, float(trade["tp_price"]))
                             log.info(f"Trailing-SL: {float(trade['sl_price']):.6f} → {new_sl:.6f}")
 
+                # 3c) Breakeven-SL (SL auf Entry heben wenn Gewinn >= Trigger)
+                if risk_cfg.breakeven_enabled:
+                    for trade in db.get_open_trades(bot_cfg.symbol):
+                        if check_breakeven(trade, last_price, risk_cfg):
+                            entry = float(trade["entry_price"])
+                            db.update_trade_sltp(trade["client_id"], entry, float(trade["tp_price"]))
+                            log.info(f"Breakeven-SL gesetzt: {trade['client_id'][:12]}… → {entry:.6f}")
+
                 # 4) SL/TP prüfen (höchste Priorität)
                 open_trades = db.get_open_trades(bot_cfg.symbol)
                 triggered   = sl_tp.check(last_price, open_trades)
                 for hit in triggered:
                     trade  = hit["trade"]
                     reason = hit["reason"]
-                    executor.sell(
-                        amount=risk.calc_sell_amount(balance),
-                        last_price=last_price,
-                        trade_client_id=trade["client_id"],
-                        reason=reason,
-                    )
-                    if reason == "sl_hit":
-                        db.set_state("last_sl_at", utcnow())
-                    exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
-                    pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
-                    notify.send_trade_sell(
-                        bot_cfg.symbol, float(trade["amount"]), exit_price,
-                        reason, pnl_eur, bot_cfg.dry_run,
-                    )
+
+                    # Feature 2: Partial TP – bei erstem TP-Hit nur Anteil verkaufen
+                    if (reason == "tp_hit"
+                            and risk_cfg.partial_tp_enabled
+                            and not int(trade.get("is_remainder") or 0)):
+                        partial   = float(trade["amount"]) * risk_cfg.partial_tp_fraction
+                        remainder = float(trade["amount"]) - partial
+                        tp_price  = float(trade["tp_price"])
+                        entry     = float(trade["entry_price"])
+                        executor.sell(
+                            amount=risk.calc_sell_amount(balance),
+                            last_price=last_price,
+                            trade_client_id=trade["client_id"],
+                            reason="tp_partial_closed",
+                            override_amount=partial,
+                        )
+                        if remainder * last_price >= risk_cfg.min_order_quote:
+                            new_tp = tp_price + (tp_price - entry)
+                            db.open_trade(str(uuid.uuid4()), bot_cfg.symbol, remainder,
+                                          tp_price, entry, new_tp, is_remainder=1)
+                            log.info(
+                                f"Partial TP: {partial:.6f} verkauft, "
+                                f"{remainder:.6f} als Remainder-Trade (SL={entry:.6f} TP={new_tp:.6f})"
+                            )
+                        pnl_eur = (tp_price - entry) * partial
+                        notify.send_trade_sell(
+                            bot_cfg.symbol, partial, tp_price,
+                            "tp_partial_closed", pnl_eur, bot_cfg.dry_run,
+                        )
+                    else:
+                        executor.sell(
+                            amount=risk.calc_sell_amount(balance),
+                            last_price=last_price,
+                            trade_client_id=trade["client_id"],
+                            reason=reason,
+                        )
+                        if reason == "sl_hit":
+                            db.set_state("last_sl_at", utcnow())
+                        exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
+                        pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
+                        notify.send_trade_sell(
+                            bot_cfg.symbol, float(trade["amount"]), exit_price,
+                            reason, pnl_eur, bot_cfg.dry_run,
+                        )
                 if triggered:
                     balance = feed.fetch_balance()
 
@@ -293,9 +385,28 @@ def main():
                 db.set_state("regime",         _sv.get("supervisor_regime", "–"))
                 db.set_state("strategy_name",  _sv.get("supervisor_strategy_name", "Standard"))
                 db.set_state("sim_pnl",        _sv.get("supervisor_sim_pnl", "–"))
-                db.set_state("use_trailing_sl", str(risk_cfg.use_trailing_sl))
-                db.set_state("volume_filter",   str(risk_cfg.volume_filter))
-                db.set_state("status",         "running")
+                db.set_state("use_trailing_sl",        str(risk_cfg.use_trailing_sl))
+                db.set_state("trailing_sl_pct",        str(risk_cfg.trailing_sl_pct))
+                db.set_state("sl_cooldown_candles",    str(risk_cfg.sl_cooldown_candles))
+                db.set_state("volume_filter",          str(risk_cfg.volume_filter))
+                db.set_state("volume_factor",          str(risk_cfg.volume_factor))
+                db.set_state("breakeven_enabled",      str(risk_cfg.breakeven_enabled))
+                db.set_state("breakeven_trigger_pct",  str(risk_cfg.breakeven_trigger_pct))
+                db.set_state("partial_tp_enabled",     str(risk_cfg.partial_tp_enabled))
+                db.set_state("partial_tp_fraction",    str(risk_cfg.partial_tp_fraction))
+                db.set_state("htf_timeframe",          bot_cfg.htf_timeframe)
+                db.set_state("htf_fast",               str(bot_cfg.htf_fast))
+                db.set_state("htf_slow",               str(bot_cfg.htf_slow))
+                db.set_state("status",                 "running")
+
+                # Feature 4: Täglicher Cleanup (orders + errors älter als cleanup_days)
+                _last_cleanup = db.get_state("last_cleanup", "")
+                if _last_cleanup:
+                    _elapsed = (datetime.now(timezone.utc)
+                                - datetime.fromisoformat(_last_cleanup)).total_seconds()
+                    if _elapsed > 86400:
+                        db.cleanup_old_records(days=risk_cfg.cleanup_days)
+                        db.set_state("last_cleanup", datetime.now(timezone.utc).isoformat())
 
                 breaker.success()
 

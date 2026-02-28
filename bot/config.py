@@ -25,6 +25,10 @@ class BotConfig:
     slow_period: int = 21       # kürzer als 26 – passt besser zur SNX-Volatilität
     poll_seconds: int = 60
     dry_run: bool = False
+    # Multi-Timeframe-Filter: BUY nur wenn HTF bullish (fast SMA >= slow SMA)
+    htf_timeframe: str = ""     # z.B. "1h", leer = deaktiviert
+    htf_fast: int = 9
+    htf_slow: int = 21
 
 
 @dataclass
@@ -55,6 +59,14 @@ class RiskConfig:
     # Volumen-Filter: Signal nur bei überdurchschnittlichem Volumen
     volume_filter: bool = False          # default aus (konservativ)
     volume_factor: float = 1.2           # Crossover-Candle muss 1.2× Avg(20) haben
+    # Breakeven-SL: SL automatisch auf Entry heben wenn Gewinn >= Trigger
+    breakeven_enabled: bool = False
+    breakeven_trigger_pct: float = 0.01  # 1% Gewinn → SL auf Entry
+    # Partial Take-Profit: bei erstem TP-Hit nur Anteil verkaufen
+    partial_tp_enabled: bool = False
+    partial_tp_fraction: float = 0.50   # 50% verkaufen, 50% als Remainder weiterführen
+    # Auto-Cleanup: alte orders/errors-Einträge regelmäßig löschen (trades nie)
+    cleanup_days: int = 30
 
 
 @dataclass

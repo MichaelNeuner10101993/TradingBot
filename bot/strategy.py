@@ -46,6 +46,14 @@ def atr(candles: list[list], period: int = 14) -> float | None:
     return sum(trs[-period:]) / period
 
 
+def is_htf_bullish(candles: list[list], fast: int, slow: int) -> bool:
+    """True wenn fast SMA >= slow SMA im höheren Timeframe (Aufwärtstrend). Zu wenig Daten → nicht filtern."""
+    closes = [c[4] for c in candles]
+    if len(closes) < slow:
+        return True
+    return sum(closes[-fast:]) / fast >= sum(closes[-slow:]) / slow
+
+
 def sma_crossover(closes: list[float], fast: int, slow: int) -> Signal:
     """
     SMA-Crossover-Signal.

@@ -303,6 +303,18 @@
     }
     .btn-secondary:hover { background: #30363d; }
 
+    /* ── Erweiterte Einstellungen ───────────────────────── */
+    .adv-settings { border-top: 1px solid #21262d; margin-top: 10px; padding-top: 8px; }
+    .adv-settings > summary {
+      cursor: pointer; color: #58a6ff; font-size: 11px; user-select: none;
+      list-style: none; padding: 2px 0 8px;
+    }
+    .adv-settings > summary::-webkit-details-marker { display: none; }
+    .adv-settings > summary::before { content: "▶ "; font-size: 9px; }
+    details[open].adv-settings > summary::before { content: "▼ "; font-size: 9px; }
+    .feat-cb { display: flex; align-items: center; gap: 5px; cursor: pointer; color: #c9d1d9; }
+    .feat-cb input[type=checkbox] { margin: 0; accent-color: #3fb950; }
+
     /* ── Market-Suche Dropdown ──────────────────────────── */
     .market-wrap { position: relative; }
     .market-dd {
@@ -480,13 +492,25 @@
     <button class="start-btn" data-role="start-btn"
             style="{{ 'display:none' if _running else '' }}"
             data-cfg='{{ {
-                "symbol":    bot.symbol,
-                "timeframe": bot.state.get("timeframe", "5m"),
-                "fast":      bot.state.get("fast_period", 9)|int,
-                "slow":      bot.state.get("slow_period", 21)|int,
-                "sl":        (bot.state.get("sl_pct", "0.03")|float * 100)|round(1),
-                "tp":        (bot.state.get("tp_pct", "0.06")|float * 100)|round(1),
-                "dry_run":   bot.dry_run,
+                "symbol":              bot.symbol,
+                "timeframe":           bot.state.get("timeframe", "5m"),
+                "fast":                bot.state.get("fast_period", 9)|int,
+                "slow":                bot.state.get("slow_period", 21)|int,
+                "sl":                  (bot.state.get("sl_pct", "0.03")|float * 100)|round(1),
+                "tp":                  (bot.state.get("tp_pct", "0.06")|float * 100)|round(1),
+                "dry_run":             bot.dry_run,
+                "trailing_sl":         bot.state.get("use_trailing_sl", "False") == "True",
+                "trailing_sl_pct":     bot.state.get("trailing_sl_pct", "0.02")|float,
+                "sl_cooldown":         bot.state.get("sl_cooldown_candles", "3")|int,
+                "volume_filter":       bot.state.get("volume_filter", "False") == "True",
+                "volume_factor":       bot.state.get("volume_factor", "1.2")|float,
+                "breakeven":           bot.state.get("breakeven_enabled", "False") == "True",
+                "breakeven_pct":       bot.state.get("breakeven_trigger_pct", "0.01")|float,
+                "partial_tp":          bot.state.get("partial_tp_enabled", "False") == "True",
+                "partial_tp_fraction": bot.state.get("partial_tp_fraction", "0.5")|float,
+                "htf_timeframe":       bot.state.get("htf_timeframe", ""),
+                "htf_fast":            bot.state.get("htf_fast", "9")|int,
+                "htf_slow":            bot.state.get("htf_slow", "21")|int,
             } | tojson }}'
             onclick="restartBot(event, this)">▶ Starten</button>
     <button class="delete-btn" data-role="delete-btn"
@@ -765,6 +789,57 @@
       <input id="nb-dry" type="checkbox"> Dry Run (kein echter Handel)
     </label>
   </div>
+
+  <details class="adv-settings">
+    <summary>⚙ Erweiterte Einstellungen</summary>
+
+    <div class="form-row">
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="nb-trailing" onchange="nbToggle('nb-trailing-pct',this.checked)"> Trailing-SL</span>
+        <input id="nb-trailing-pct" type="number" value="2" min="0.1" max="20" step="0.1" disabled style="opacity:.4" title="Abstand % (default: 2%)">
+      </label>
+      <label>SL-Cooldown (Candles)
+        <input id="nb-cooldown" type="number" value="3" min="0" max="20">
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="nb-volume" onchange="nbToggle('nb-volume-factor',this.checked)"> Volumen-Filter</span>
+        <input id="nb-volume-factor" type="number" value="1.2" min="1" max="5" step="0.1" disabled style="opacity:.4" title="Faktor (default: 1.2)">
+      </label>
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="nb-breakeven" onchange="nbToggle('nb-breakeven-pct',this.checked)"> Breakeven-SL</span>
+        <input id="nb-breakeven-pct" type="number" value="1" min="0.1" max="10" step="0.1" disabled style="opacity:.4" title="Trigger % (default: 1%)">
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="nb-partial" onchange="nbToggle('nb-partial-frac',this.checked)"> Partial-TP</span>
+        <input id="nb-partial-frac" type="number" value="50" min="10" max="90" step="5" disabled style="opacity:.4" title="Anteil % (default: 50%)">
+      </label>
+      <label>HTF-Timeframe
+        <select id="nb-htf-tf">
+          <option value="">– deaktiviert –</option>
+          <option value="15m">15m</option>
+          <option value="1h">1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>HTF Fast SMA
+        <input id="nb-htf-fast" type="number" value="9" min="2" max="200">
+      </label>
+      <label>HTF Slow SMA
+        <input id="nb-htf-slow" type="number" value="21" min="3" max="500">
+      </label>
+    </div>
+  </details>
+
   <div id="nb-error" style="color:#f85149;font-size:12px;min-height:18px;margin-top:4px"></div>
   <div class="form-actions">
     <button class="btn-secondary" onclick="document.getElementById('new-bot-dialog').close()">Abbrechen</button>
@@ -1014,6 +1089,12 @@
     }
   });
 
+  // ── Feature-Checkbox toggled ──────────────────────────────────────
+  function nbToggle(inputId, checked) {
+    const el = document.getElementById(inputId);
+    if (el) { el.disabled = !checked; el.style.opacity = checked ? '1' : '0.4'; }
+  }
+
   // ── Bot starten ───────────────────────────────────────────────────
   async function startBot() {
     const symbol = document.getElementById('nb-symbol').value.trim().toUpperCase().replace(/\s+/g, '');
@@ -1035,13 +1116,25 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol,
-          timeframe:      document.getElementById('nb-tf').value,
-          fast:           parseInt(document.getElementById('nb-fast').value),
-          slow:           parseInt(document.getElementById('nb-slow').value),
-          sl:             parseFloat(document.getElementById('nb-sl').value) / 100,
-          tp:             parseFloat(document.getElementById('nb-tp').value) / 100,
-          safety_buffer:  parseFloat(document.getElementById('nb-buf').value) / 100,
-          dry_run:        document.getElementById('nb-dry').checked,
+          timeframe:           document.getElementById('nb-tf').value,
+          fast:                parseInt(document.getElementById('nb-fast').value),
+          slow:                parseInt(document.getElementById('nb-slow').value),
+          sl:                  parseFloat(document.getElementById('nb-sl').value) / 100,
+          tp:                  parseFloat(document.getElementById('nb-tp').value) / 100,
+          safety_buffer:       parseFloat(document.getElementById('nb-buf').value) / 100,
+          dry_run:             document.getElementById('nb-dry').checked,
+          trailing_sl:         document.getElementById('nb-trailing').checked,
+          trailing_sl_pct:     parseFloat(document.getElementById('nb-trailing-pct').value) / 100,
+          sl_cooldown:         parseInt(document.getElementById('nb-cooldown').value),
+          volume_filter:       document.getElementById('nb-volume').checked,
+          volume_factor:       parseFloat(document.getElementById('nb-volume-factor').value),
+          breakeven:           document.getElementById('nb-breakeven').checked,
+          breakeven_pct:       parseFloat(document.getElementById('nb-breakeven-pct').value) / 100,
+          partial_tp:          document.getElementById('nb-partial').checked,
+          partial_tp_fraction: parseFloat(document.getElementById('nb-partial-frac').value) / 100,
+          htf_timeframe:       document.getElementById('nb-htf-tf').value,
+          htf_fast:            parseInt(document.getElementById('nb-htf-fast').value),
+          htf_slow:            parseInt(document.getElementById('nb-htf-slow').value),
         }),
       });
       const data = await res.json();
@@ -1071,14 +1164,26 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          symbol:         cfg.symbol,
-          timeframe:      cfg.timeframe  || '5m',
-          fast:           cfg.fast       || 9,
-          slow:           cfg.slow       || 21,
-          sl:             (cfg.sl        || 3)  / 100,
-          tp:             (cfg.tp        || 6)  / 100,
-          safety_buffer:  0.10,
-          dry_run:        cfg.dry_run    || false,
+          symbol:              cfg.symbol,
+          timeframe:           cfg.timeframe           || '5m',
+          fast:                cfg.fast                || 9,
+          slow:                cfg.slow                || 21,
+          sl:                  (cfg.sl                 || 3)  / 100,
+          tp:                  (cfg.tp                 || 6)  / 100,
+          safety_buffer:       0.10,
+          dry_run:             cfg.dry_run             || false,
+          trailing_sl:         cfg.trailing_sl         || false,
+          trailing_sl_pct:     cfg.trailing_sl_pct     || 0.02,
+          sl_cooldown:         cfg.sl_cooldown         !== undefined ? cfg.sl_cooldown : 3,
+          volume_filter:       cfg.volume_filter       || false,
+          volume_factor:       cfg.volume_factor       || 1.2,
+          breakeven:           cfg.breakeven           || false,
+          breakeven_pct:       cfg.breakeven_pct       || 0.01,
+          partial_tp:          cfg.partial_tp          || false,
+          partial_tp_fraction: cfg.partial_tp_fraction || 0.5,
+          htf_timeframe:       cfg.htf_timeframe       || '',
+          htf_fast:            cfg.htf_fast            || 9,
+          htf_slow:            cfg.htf_slow            || 21,
         }),
       });
       const data = await res.json();

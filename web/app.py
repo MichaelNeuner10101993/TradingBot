@@ -490,6 +490,22 @@ def api_start_bot():
         ]
         if data.get("dry_run"):
             cmd.append("--dry-run")
+        if data.get("trailing_sl"):
+            cmd += ["--trailing-sl", "--trailing-sl-pct", str(float(data.get("trailing_sl_pct", 0.02)))]
+        sl_cd = data.get("sl_cooldown")
+        if sl_cd is not None:
+            cmd += ["--sl-cooldown", str(int(sl_cd))]
+        if data.get("volume_filter"):
+            cmd += ["--volume-filter", "--volume-factor", str(float(data.get("volume_factor", 1.2)))]
+        if data.get("breakeven"):
+            cmd += ["--breakeven", "--breakeven-pct", str(float(data.get("breakeven_pct", 0.01)))]
+        if data.get("partial_tp"):
+            cmd += ["--partial-tp", "--partial-tp-fraction", str(float(data.get("partial_tp_fraction", 0.5)))]
+        htf_tf = data.get("htf_timeframe", "")
+        if htf_tf:
+            cmd += ["--htf-timeframe", htf_tf,
+                    "--htf-fast", str(int(data.get("htf_fast", 9))),
+                    "--htf-slow", str(int(data.get("htf_slow", 21)))]
 
         log_path = os.path.join(LOG_DIR, f"{symbol_safe}.log")
         with open(log_path, "a") as logf:

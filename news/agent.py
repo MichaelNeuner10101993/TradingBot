@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS alert_history (
     acted_at        TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS news_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_news_fetched_at
     ON news_events(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_ts
@@ -194,6 +199,15 @@ class NewsAgent:
         self.conn = _open_db(cfg.db_path)
 
         self._fetchers = self._build_fetchers()
+        # Letzter Alert-Zeitstempel pro Coin (in-memory, resets bei Neustart)
+        self._last_alert: dict[str, datetime] = {}
+        # Gespeichertes Alert-Interval aus DB laden (falls via Telegram geändert)
+        row = self.conn.execute(
+            "SELECT value FROM news_settings WHERE key='alert_cooldown_minutes'"
+        ).fetchone()
+        if row:
+            self.cfg.alert_cooldown_minutes = int(row["value"])
+            logger.info("Alert-Cooldown aus DB geladen: %d min", self.cfg.alert_cooldown_minutes)
 
     def _build_fetchers(self):
         return [
@@ -244,6 +258,8 @@ class NewsAgent:
         logger.info("Gesamt gefetcht: %d Artikel", len(all_items))
 
         alerts_sent = 0
+        # Sammelt Alert-Kandidaten pro Coin → am Ende als Konsens-Alert senden
+        pending_alerts: dict[str, list] = {}
 
         skipped_old = skipped_url = skipped_title = skipped_quality = skipped_irrelevant = 0
 
@@ -330,28 +346,21 @@ class NewsAgent:
                 )
             self.conn.commit()
 
-            # 8. Alert auslösen wenn Score über Schwelle
+            # 8. Alert-Kandidat sammeln wenn Score über Schwelle
             if abs(score) >= self.cfg.sentiment_threshold:
                 event_id = self.conn.execute(
                     "SELECT id FROM news_events WHERE url_hash = ?", (item.url_hash,)
                 ).fetchone()["id"]
 
-                if dry_run:
-                    logger.info(
-                        "[DRY-RUN] Alert: [%s] %.3f | %s | %s",
-                        label.upper(), score, coins or "allgemein", item.title[:80]
-                    )
-                    alerts_sent += 1
-                elif self.telegram:
-                    try:
-                        self.telegram.send_alert(item, score, label, coins, event_id)
-                        self.conn.execute(
-                            "UPDATE news_events SET alerted=1 WHERE id=?", (event_id,)
-                        )
-                        self.conn.commit()
-                        alerts_sent += 1
-                    except Exception as e:
-                        logger.error("Telegram Alert fehlgeschlagen: %s", e)
+                # Primär-Coin für Gruppierung (erster Treffer oder "MARKET")
+                primary = coins[0] if coins else "MARKET"
+                pending_alerts.setdefault(primary, []).append({
+                    "item": item, "score": score, "label": label,
+                    "coins": coins, "event_id": event_id,
+                })
+
+        # 9. Gesammelte Alerts als Konsens pro Coin senden
+        alerts_sent += self._flush_alerts(pending_alerts, dry_run)
 
         logger.info(
             "Fetch-Cycle abgeschlossen | gefetcht=%d | qualität=%d | alt=%d | url-dup=%d | "
@@ -359,6 +368,68 @@ class NewsAgent:
             len(all_items), skipped_quality, skipped_old, skipped_url,
             skipped_title, skipped_irrelevant, alerts_sent,
         )
+        return alerts_sent
+
+    # ------------------------------------------------------------------
+    # Alert-Aggregation
+    # ------------------------------------------------------------------
+
+    def _flush_alerts(self, pending: dict, dry_run: bool) -> int:
+        """
+        Sendet für jeden Coin einen einzigen Konsens-Alert.
+        Einzelartikel → send_alert() (bisheriges Format).
+        Mehrere Artikel → send_aggregated_alert() mit Konsens-Score.
+        Cooldown: kein zweiter Alert für denselben Coin innerhalb N Minuten.
+        """
+        if not pending:
+            return 0
+
+        alerts_sent = 0
+        now = datetime.now(timezone.utc)
+        cooldown = timedelta(minutes=self.cfg.alert_cooldown_minutes)
+
+        for coin, articles in pending.items():
+            # Cooldown-Check
+            last = self._last_alert.get(coin)
+            if last and (now - last) < cooldown:
+                remaining = int((cooldown - (now - last)).total_seconds() / 60)
+                logger.info(
+                    "Alert-Cooldown %s: nächster Alert frühestens in %d min", coin, remaining
+                )
+                continue
+
+            if dry_run:
+                for a in articles:
+                    logger.info(
+                        "[DRY-RUN] Alert [%s] %.3f | %s | %s",
+                        a["label"].upper(), a["score"], coin, a["item"].title[:60]
+                    )
+                self._last_alert[coin] = now
+                alerts_sent += 1
+                continue
+
+            if not self.telegram:
+                continue
+
+            try:
+                if len(articles) == 1:
+                    a = articles[0]
+                    self.telegram.send_alert(a["item"], a["score"], a["label"], a["coins"], a["event_id"])
+                    self.conn.execute("UPDATE news_events SET alerted=1 WHERE id=?", (a["event_id"],))
+                else:
+                    scores = [a["score"] for a in articles]
+                    consensus = sum(scores) / len(scores)
+                    consensus_label = sent.score_to_label(consensus)
+                    self.telegram.send_aggregated_alert(coin, articles, consensus, consensus_label)
+                    for a in articles:
+                        self.conn.execute("UPDATE news_events SET alerted=1 WHERE id=?", (a["event_id"],))
+
+                self.conn.commit()
+                self._last_alert[coin] = now
+                alerts_sent += 1
+            except Exception as e:
+                logger.error("Telegram Alert fehlgeschlagen (%s): %s", coin, e)
+
         return alerts_sent
 
     # ------------------------------------------------------------------
