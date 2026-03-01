@@ -10,10 +10,6 @@
 # =============================================================================
 set -euo pipefail
 
-# Wenn das Skript via Pipe (curl | bash) gestartet wird, ist stdin belegt.
-# Wir holen uns das Terminal zurück, damit read-Aufrufe funktionieren.
-exec < /dev/tty
-
 # ---------------------------------------------------------------------------
 # Farben
 # ---------------------------------------------------------------------------
@@ -62,11 +58,11 @@ ask() {
     local default="${3:-}"
     local value=""
     if [[ -n "$default" ]]; then
-        read -rp "  ${prompt} [${default}]: " value
+        read -rp "  ${prompt} [${default}]: " value </dev/tty
         value="${value:-$default}"
     else
         while [[ -z "$value" ]]; do
-            read -rp "  ${prompt}: " value
+            read -rp "  ${prompt}: " value </dev/tty
             [[ -z "$value" ]] && err "Pflichtfeld – bitte ausfüllen."
         done
     fi
@@ -78,7 +74,7 @@ ask_secret() {
     local prompt="$2"
     local value=""
     while [[ -z "$value" ]]; do
-        read -rsp "  ${prompt}: " value
+        read -rsp "  ${prompt}: " value </dev/tty
         echo ""
         [[ -z "$value" ]] && err "Pflichtfeld – bitte ausfüllen."
     done
@@ -89,7 +85,7 @@ ask_optional() {
     local varname="$1"
     local prompt="$2"
     local value=""
-    read -rsp "  ${prompt} (Enter zum Überspringen): " value
+    read -rsp "  ${prompt} (Enter zum Überspringen): " value </dev/tty
     echo ""
     printf -v "$varname" '%s' "$value"
 }
@@ -97,7 +93,7 @@ ask_optional() {
 confirm() {
     local prompt="${1:-Fortfahren?}"
     local answer=""
-    read -rp "  ${prompt} [j/N]: " answer
+    read -rp "  ${prompt} [j/N]: " answer </dev/tty
     [[ "${answer,,}" =~ ^(j|ja|y|yes)$ ]]
 }
 
@@ -432,7 +428,7 @@ if confirm "WireGuard VPN einrichten?"; then
     ask WG_HOST "Öffentliche IP / Hostname"
 
     WG_PORT=51820
-    read -rp "  WireGuard-Port [51820]: " _wgport
+    read -rp "  WireGuard-Port [51820]: " _wgport </dev/tty
     WG_PORT="${_wgport:-51820}"
 
     VPN_NET="10.244.199"
