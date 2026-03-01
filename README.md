@@ -776,6 +776,38 @@ Nach VPN-Verbindung: `http://<pi-vpn-ip>:5001` im Browser.
 
 ---
 
+## Troubleshooting
+
+### `git pull` – „There is no tracking information for the current branch"
+
+Tritt auf wenn der Branch kein Upstream-Tracking hat (z.B. nach manuellem Klonen oder frischer Installation).
+
+```bash
+git branch --set-upstream-to=origin/main main
+git pull && sudo systemctl restart tradingbot-web.service
+```
+
+### Dashboard-Update – „git fetch fehlgeschlagen: dubious ownership"
+
+Tritt auf wenn das Repo mit `sudo` geklont wurde und der Flask-Prozess als anderer User läuft.
+Einmalig beheben:
+
+```bash
+git config --global --add safe.directory ~/bot
+```
+
+### `curl … | bash` bricht mit Fehler 23 ab
+
+Passiert wenn das Installationsskript via Pipe gestartet wird und `read`-Aufrufe fehlschlagen.
+Abhilfe: Skript erst herunterladen, dann ausführen:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MichaelNeuner10101993/TradingBot/main/install.sh -o /tmp/install.sh
+bash /tmp/install.sh
+```
+
+---
+
 ## Sicherheit
 
 - Kraken API-Keys mit minimalen Rechten (kein Withdraw)
