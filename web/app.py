@@ -726,8 +726,9 @@ def api_stop_bot():
 def check_updates():
     """Prüft ob auf dem main-Branch neuere Commits vorliegen."""
     try:
+        git_safe = ["-c", f"safe.directory={PROJECT_ROOT}"]
         fetch = subprocess.run(
-            ["git", "fetch", "origin", "main"],
+            ["git"] + git_safe + ["fetch", "origin", "main"],
             capture_output=True, timeout=20, cwd=PROJECT_ROOT,
         )
         if fetch.returncode != 0:
@@ -735,13 +736,13 @@ def check_updates():
             return jsonify({"ok": False, "error": f"git fetch fehlgeschlagen: {err}"})
 
         log = subprocess.run(
-            ["git", "log", "HEAD..origin/main", "--oneline", "--no-decorate"],
+            ["git"] + git_safe + ["log", "HEAD..origin/main", "--oneline", "--no-decorate"],
             capture_output=True, text=True, timeout=10, cwd=PROJECT_ROOT,
         )
         commits = [c.strip() for c in log.stdout.strip().splitlines() if c.strip()]
 
         current = subprocess.run(
-            ["git", "log", "-1", "--format=%h %s", "HEAD"],
+            ["git"] + git_safe + ["log", "-1", "--format=%h %s", "HEAD"],
             capture_output=True, text=True, cwd=PROJECT_ROOT,
         ).stdout.strip()
 
