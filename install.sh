@@ -10,6 +10,10 @@
 # =============================================================================
 set -euo pipefail
 
+# Wenn das Skript via Pipe (curl | bash) gestartet wird, ist stdin belegt.
+# Wir holen uns das Terminal zurück, damit read-Aufrufe funktionieren.
+exec < /dev/tty
+
 # ---------------------------------------------------------------------------
 # Farben
 # ---------------------------------------------------------------------------
