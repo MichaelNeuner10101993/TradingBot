@@ -1296,6 +1296,17 @@ class TelegramNewsBot:
         import re
         text = (update.message.text or "").strip().lower()
 
+        # Tipps / Parameter-Optimierung (VOR status prüfen, da "tipps für die bots" sonst falsch matcht)
+        m = re.search(r'\b(?:tipps?|ratschlag|optimier|verbesser|parameter.?tipp|was soll ich ändern|wie anpassen)\b', text)
+        if m:
+            sym_m = re.search(r'\b([A-Za-z]{2,6})(?:/EUR)?\b', text.upper())
+            if sym_m:
+                context.args = [_normalize_symbol(sym_m.group(1))]
+            else:
+                context.args = []
+            await self._cmd_tipps(update, context)
+            return
+
         # status / bots
         if re.search(r'\bstatus\b|\bbots?\b', text):
             await self._cmd_status(update, context)
@@ -1574,17 +1585,6 @@ class TelegramNewsBot:
                 else:
                     await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
                 return
-
-        # Tipps / Parameter-Optimierung
-        m = re.search(r'\b(?:tipp(?:s)?|ratschlag|optimier|verbesser|parameter.?tipp|was soll ich ändern|wie anpassen)\b', text)
-        if m:
-            sym_m = re.search(r'\b([A-Za-z]{2,6})(?:/EUR)?\b', text.upper())
-            if sym_m:
-                context.args = [_normalize_symbol(sym_m.group(1))]
-            else:
-                context.args = []
-            await self._cmd_tipps(update, context)
-            return
 
         # LLM-Fallback: Claude Haiku als Freitext-Parser
         running = list(_get_running_symbols(self.cfg.web_api_base))
