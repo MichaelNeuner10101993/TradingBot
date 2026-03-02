@@ -585,6 +585,7 @@
           <th style="min-width:220px">Zielkurs</th>
           <th>Gewinn</th>
           <th></th>
+          <th></th>
         </tr>
       </thead>
       <tbody id="holdings-tbody"></tbody>
@@ -1099,10 +1100,25 @@
     if (el) el.textContent = s;
   }, 1000);
 
-  // Collapse/Expand
-  function toggle(header) {
-    header.closest('.bot-section').classList.toggle('collapsed');
+  // Collapse/Expand mit localStorage-Persistenz
+  function _collapseKey(section) {
+    return 'collapsed_' + (section.dataset.symbol || section.id || '');
   }
+
+  function toggle(header) {
+    const section = header.closest('.bot-section');
+    section.classList.toggle('collapsed');
+    const key = _collapseKey(section);
+    if (key !== 'collapsed_') localStorage.setItem(key, section.classList.contains('collapsed') ? '1' : '0');
+  }
+
+  // Collapsed-Zustand nach Reload wiederherstellen
+  document.querySelectorAll('.bot-section').forEach(section => {
+    const key = _collapseKey(section);
+    if (key !== 'collapsed_' && localStorage.getItem(key) === '1') {
+      section.classList.add('collapsed');
+    }
+  });
 
   // ── Update-Check ───────────────────────────────────────────────────────
   async function checkUpdates() {
@@ -1286,6 +1302,9 @@
       const profitStr   = (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' €';
 
       const sellCell = `<button class="sltp-adj" style="background:#238636;border-color:#2ea043;padding:3px 10px" onclick="holdingSell('${h.symbol}', this, ${h.bot_running})">Verkaufen</button>`;
+      const botCell  = h.bot_running
+        ? `<span style="color:#3fb950;font-size:11px;white-space:nowrap">● läuft</span>`
+        : `<button class="sltp-adj" style="background:#1f6feb;border-color:#388bfd;padding:3px 10px;white-space:nowrap" onclick="openNewBotDialog('${h.symbol}')">▶ Bot</button>`;
 
       tbody.insertAdjacentHTML('beforeend', `
         <tr>
@@ -1302,6 +1321,7 @@
           </td>
           <td style="color:${profitColor};font-variant-numeric:tabular-nums">${profitStr}</td>
           <td>${sellCell}</td>
+          <td>${botCell}</td>
         </tr>`);
     });
   }
@@ -1457,9 +1477,9 @@
     return p.toFixed(8) + ' €';
   }
 
-  async function openNewBotDialog() {
+  async function openNewBotDialog(preSymbol = null) {
     const dlg = document.getElementById('new-bot-dialog');
-    document.getElementById('nb-symbol').value = '';
+    document.getElementById('nb-symbol').value = preSymbol || '';
     document.getElementById('nb-error').textContent = '';
     document.getElementById('nb-market-dd').style.display = 'none';
     dlg.showModal();
@@ -1478,11 +1498,11 @@
       }
       inp.disabled = false;
       inp.placeholder = 'Suchen… z.B. BTC oder Bitcoin';
-      inp.focus();
+      if (!preSymbol) inp.focus();
     } else {
       const inp = document.getElementById('nb-symbol');
       inp.placeholder = 'Suchen… z.B. BTC oder Bitcoin';
-      inp.focus();
+      if (!preSymbol) inp.focus();
     }
   }
 

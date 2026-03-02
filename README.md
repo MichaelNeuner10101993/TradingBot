@@ -593,11 +593,21 @@ Im Dialog **+ Bot hinzufügen** gibt es zwei Bereiche:
 
 Beim **▶ Starten** (Wiederstart eines gestoppten Bots aus der Card) werden alle gespeicherten Feature-Flags automatisch wiederhergestellt.
 
-### Direktverkauf ohne laufenden Bot
+### Bestände-Tabelle
 
-In der **Bestände-Tabelle** ist der **Verkaufen**-Button immer aktiv:
-- **Bot läuft**: Force-SELL → Bot verkauft beim nächsten Loop (~60s)
-- **Bot gestoppt / kein Bot**: Sofortiger Direktverkauf über Kraken (`POST /api/direct_sell`) – kein Bot nötig. Offene Trades in der DB werden automatisch geschlossen.
+Zeigt alle auf Kraken gehaltenen Coins mit Menge, EUR-Wert, aktuellem Kurs und Zielkurs-Rechner.
+
+| Spalte | Beschreibung |
+|--------|--------------|
+| Zielkurs | ± Buttons verschieben den Zielkurs (~0.25 € P&L pro Klick) |
+| Verkaufen | Immer aktiv: Force-SELL wenn Bot läuft, sonst Direktverkauf via `POST /api/direct_sell` |
+| Bot | **▶ Bot**: öffnet „Bot hinzufügen"-Dialog mit Symbol vorausgefüllt · **● läuft**: Bot ist aktiv |
+
+**Direktverkauf ohne Bot**: Sofortiger Marktverkauf direkt über Kraken – kein laufender Bot nötig. Offene Trades in der DB werden automatisch geschlossen.
+
+### Collapse-Zustand nach Reload
+
+Eingeklappte Bot-Sections und die Bestände-Sektion merken sich ihren Zustand über Seiten-Reloads hinweg (gespeichert in `localStorage`). Einmal zugeklappt = bleibt zugeklappt bis manuell aufgeklappt.
 
 ---
 
