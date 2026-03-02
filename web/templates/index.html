@@ -86,6 +86,7 @@
     .badge.dry     { background:#2d2208; color:#d29922; }
     .badge.running { background:#1c2d3f; color:#58a6ff; }
     .badge.stopped { background:#21262d; color:#8b949e; }
+    .badge.paused  { background:#3d2e00; color:#d29922; }
     .badge.sl_hit  { background:#3d1a1a; color:#f85149; }
     .badge.tp_hit  { background:#1f4e2e; color:#3fb950; }
     .badge.open    { background:#1c2d3f; color:#58a6ff; }
@@ -289,6 +290,17 @@
       margin-left: auto;
     }
     .stop-btn:hover { background: #3d1a1a; }
+
+    .pause-btn {
+      background: transparent;
+      border: 1px solid #4a3800;
+      border-radius: 4px;
+      color: #d29922;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 2px 9px;
+    }
+    .pause-btn:hover { background: #4a3800; }
 
     .start-btn {
       background: transparent;
@@ -626,6 +638,12 @@
     <button class="stop-btn" data-role="stop-btn"
             style="{{ '' if _running else 'display:none' }}"
             onclick="stopBot(event, '{{ bot.symbol }}', this)">■ Stoppen</button>
+    <button class="pause-btn" data-role="pause-btn"
+            style="{{ '' if (_running and not bot.paused) else 'display:none' }}"
+            onclick="pauseBot(event, '{{ bot.symbol }}', true, this)">⏸ Pause</button>
+    <button class="pause-btn" data-role="resume-btn"
+            style="{{ '' if (_running and bot.paused) else 'display:none' }}"
+            onclick="pauseBot(event, '{{ bot.symbol }}', false, this)">▶ Fortsetzen</button>
     <button class="start-btn" data-role="start-btn"
             style="{{ 'display:none' if _running else '' }}"
             data-cfg='{{ {
@@ -1194,7 +1212,8 @@
       if (statusEl) {
         const st = bot.status || '';
         let cls = 'stopped', txt = '■ OFF';
-        if (st.includes('running')) { cls = 'running'; txt = '● ON'; }
+        if (st === 'paused') { cls = 'paused'; txt = '⏸ PAU'; }
+        else if (st.includes('running')) { cls = 'running'; txt = '● ON'; }
         else if (st.includes('error')) { cls = 'err'; txt = '⚠ ERR'; }
         statusEl.className = `badge ${cls}`;
         statusEl.textContent = txt;
@@ -1270,10 +1289,15 @@
         const stopBtn  = section.querySelector('[data-role="stop-btn"]');
         const startBtn = section.querySelector('[data-role="start-btn"]');
         const delBtn   = section.querySelector('[data-role="delete-btn"]');
+        const pauseBtn  = section.querySelector('[data-role="pause-btn"]');
+        const resumeBtn = section.querySelector('[data-role="resume-btn"]');
+        const isPaused  = bot.paused === true;
         // Nicht überschreiben wenn Button gerade aktiv ist (Stop/Start läuft)
         if (stopBtn  && !stopBtn.disabled)  stopBtn.style.display  = isRunning ? '' : 'none';
         if (startBtn && !startBtn.disabled) startBtn.style.display = isRunning ? 'none' : '';
         if (delBtn)                          delBtn.style.display   = isRunning ? 'none' : '';
+        if (pauseBtn  && !pauseBtn.disabled)  pauseBtn.style.display  = (isRunning && !isPaused) ? '' : 'none';
+        if (resumeBtn && !resumeBtn.disabled) resumeBtn.style.display = (isRunning && isPaused)  ? '' : 'none';
       }
     });
   }
@@ -1686,6 +1710,29 @@
       btn.textContent = '✗ Verbindungsfehler';
       setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
     }
+  }
+
+  // ── Bot pausieren / fortsetzen ────────────────────────────────────
+  async function pauseBot(event, symbol, pause, btn) {
+    event.stopPropagation();
+    const orig = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await fetch('/api/bot/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, pause }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        btn.textContent = pause ? '✓ Pausiert' : '✓ Fortgesetzt';
+        btn.style.borderColor = '#3fb950'; btn.style.color = '#3fb950';
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        btn.textContent = '✗ Fehler'; btn.disabled = false;
+        setTimeout(() => { btn.textContent = orig; btn.style = ''; }, 3000);
+      }
+    } catch { btn.textContent = '✗ Fehler'; btn.disabled = false; }
   }
 
   // ── Bot löschen ──────────────────────────────────────────────────

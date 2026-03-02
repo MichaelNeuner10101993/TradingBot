@@ -166,6 +166,7 @@ def main():
 
                 # 2) Supervisor-Anpassungen einlesen (falls Supervisor läuft)
                 _sv = db.get_all_state()
+                _paused = _sv.get("paused", "false").lower() == "true"
 
                 # 2a) Laufzeit-Overrides aus Telegram/API (pending_* Schlüssel, einmalig)
                 for _ok, _obj, _attr, _cast in [
@@ -375,6 +376,8 @@ def main():
 
                 if not ok:
                     log.debug(f"Kein Trade: {reason}")
+                elif _paused:
+                    log.info("⏸ Handel pausiert – kein Trade ausgeführt")
                 else:
                     # 6) Order ausführen
                     if signal == "BUY" and risk_cfg.sl_cooldown_candles > 0:
@@ -427,7 +430,7 @@ def main():
                 db.set_state("htf_timeframe",          bot_cfg.htf_timeframe)
                 db.set_state("htf_fast",               str(bot_cfg.htf_fast))
                 db.set_state("htf_slow",               str(bot_cfg.htf_slow))
-                db.set_state("status",                 "running")
+                db.set_state("status",                 "paused" if _paused else "running")
 
                 # Feature 4: Täglicher Cleanup (orders + errors älter als cleanup_days)
                 _last_cleanup = db.get_state("last_cleanup", "")

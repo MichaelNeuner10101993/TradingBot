@@ -340,6 +340,7 @@ def _load_bot(db_path: str) -> dict:
             "total_expect_profit_eur":  round(total_expect_profit_eur, 2),
             "total_expect_loss_eur":    round(total_expect_loss_eur, 2),
             "process_running":          process_running,
+            "paused":                   state.get("paused", "false").lower() == "true",
         }
     except Exception as e:
         return {
@@ -869,6 +870,30 @@ def api_stop_bot():
             return jsonify({"ok": False, "error": f"{symbol}: Prozess nicht gefunden ({detail})"}), 404
 
         return jsonify({"ok": True, "symbol": symbol})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _find_db(symbol: str) -> str | None:
+    """Gibt den DB-Pfad für ein Symbol zurück oder None wenn nicht gefunden."""
+    symbol_safe = symbol.replace("/", "_")
+    path = os.path.join(DB_DIR, f"{symbol_safe}.db")
+    return path if os.path.exists(path) else None
+
+
+@app.route("/api/bot/pause", methods=["POST"])
+def api_bot_pause():
+    try:
+        data   = request.get_json() or {}
+        symbol = (data.get("symbol") or "").upper().replace("-", "/")
+        pause  = bool(data.get("pause", True))
+        db_path = _find_db(symbol)
+        if not db_path:
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol}"}), 404
+        db = StateDB(db_path)
+        db.set_state("paused", "true" if pause else "false")
+        db.close()
+        return jsonify({"ok": True, "symbol": symbol, "paused": pause})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

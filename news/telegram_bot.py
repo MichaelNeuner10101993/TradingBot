@@ -1298,8 +1298,9 @@ class TelegramNewsBot:
 
         # Tipps / Parameter-Optimierung (VOR status prüfen, da "tipps für die bots" sonst falsch matcht)
         m = re.search(r'\b(?:tipps?|ratschlag|optimier|verbesser|parameter.?tipp|was soll ich ändern|wie anpassen)\b', text)
-        if m:
-            sym_m = re.search(r'\b([A-Za-z]{2,6})(?:/EUR)?\b', text.upper())
+        if m and not re.search(r'\bsupervisor\b', text):
+            _coins = "|".join(k.split("/")[0].lower() for k in self.cfg.coin_keywords.keys())
+            sym_m = re.search(rf'\b({_coins})\b', text.lower()) if _coins else None
             if sym_m:
                 context.args = [_normalize_symbol(sym_m.group(1))]
             else:
@@ -1374,6 +1375,24 @@ class TelegramNewsBot:
         if m:
             context.args = [_normalize_symbol(m.group(1))]
             await self._cmd_start_bot(update, context)
+            return
+
+        # handel pausieren
+        m = re.search(r'\b(?:pausier|pause|aussetzen|stopp.handel|handel.aus)\b', text)
+        if m and not re.search(r'\bsupervisor\b', text):
+            _coins = "|".join(k.split("/")[0].lower() for k in self.cfg.coin_keywords.keys())
+            sym_m = re.search(rf'\b({_coins})\b', text.lower()) if _coins else None
+            symbol = _normalize_symbol(sym_m.group(1)) if sym_m else None
+            await self._pause_bot(update, symbol, pause=True)
+            return
+
+        # handel fortsetzen
+        m = re.search(r'\b(?:fortsetzen?|weiter(?:machen|handel)|resume|reaktivier)\b', text)
+        if m:
+            _coins = "|".join(k.split("/")[0].lower() for k in self.cfg.coin_keywords.keys())
+            sym_m = re.search(rf'\b({_coins})\b', text.lower()) if _coins else None
+            symbol = _normalize_symbol(sym_m.group(1)) if sym_m else None
+            await self._pause_bot(update, symbol, pause=False)
             return
 
         # kauf / buy <symbol>
@@ -1610,6 +1629,10 @@ class TelegramNewsBot:
         elif action == "stop_bot" and symbol:
             context.args = [symbol]
             await self._cmd_stop_bot(update, context); return
+        elif action == "pause_bot":
+            await self._pause_bot(update, symbol or None, pause=True); return
+        elif action == "resume_bot":
+            await self._pause_bot(update, symbol or None, pause=False); return
         elif action == "force_buy" and symbol:
             result = _call_force_signal(self.cfg.web_api_base, symbol, "BUY")
             msg = f"📈 Force-BUY für <b>{symbol}</b> gesetzt.\n<i>Wird beim nächsten Loop (~60s) ausgeführt.</i>" if result["ok"] else f"❌ {result.get('error')}"
@@ -1727,6 +1750,34 @@ class TelegramNewsBot:
                 f"❌ Fehler beim Stoppen von *{_esc(symbol)}*:\n`{_esc(result['error'])}`",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
+
+    async def _pause_bot(self, update, symbol: str | None, pause: bool):
+        """Pausiert oder setzt alle/einen Bot fort via /api/bot/pause."""
+        if symbol:
+            targets = [symbol]
+        else:
+            try:
+                resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+                targets = [b["symbol"] for b in resp.json() if b.get("process_running")]
+            except Exception:
+                targets = []
+        if not targets:
+            await update.message.reply_text("❌ Kein laufender Bot gefunden.")
+            return
+        lines = []
+        for sym in targets:
+            try:
+                r = requests.post(
+                    f"{self.cfg.web_api_base}/api/bot/pause",
+                    json={"symbol": sym, "pause": pause},
+                    timeout=5,
+                )
+                ok = r.json().get("ok", False)
+            except Exception as e:
+                ok = False
+            icon = "⏸" if pause else "▶"
+            lines.append(f"{'✅' if ok else '❌'} {sym} {icon if ok else 'Fehler'}")
+        await update.message.reply_text("\n".join(lines))
 
     async def _cmd_stop_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -2615,6 +2666,8 @@ def _llm_parse_command(text: str, running_symbols: list[str]) -> dict:
             "- start_bot: Bot starten (benötigt symbol)\n"
             "- stop_bot: Bot stoppen (benötigt symbol)\n"
             "- stop_all: Alle Bots sofort stoppen\n"
+            "- pause_bot: Handel pausieren ohne Bot zu stoppen (optionales symbol, sonst alle)\n"
+            "- resume_bot: Pausierten Handel fortsetzen (optionales symbol, sonst alle)\n"
             "- force_buy: Sofortigen Kauf auslösen (benötigt symbol)\n"
             "- force_sell: Sofortigen Verkauf auslösen (benötigt symbol)\n"
             "- set_sl: Stop-Loss in % setzen (benötigt symbol, value als Zahl z.B. 2.5)\n"

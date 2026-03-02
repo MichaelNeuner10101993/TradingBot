@@ -32,6 +32,7 @@ from bot.persistence import StateDB, utcnow
 from bot.regime import classify_regime, REGIME_TEMPLATES
 from bot import candles_db as cdb
 from bot import optimizer, notify
+from bot.optimizer import RSI_ATR_COMBOS
 
 FEATURE_COMBOS = [
     {"use_trailing_sl": False, "volume_filter": False},
@@ -39,6 +40,65 @@ FEATURE_COMBOS = [
     {"use_trailing_sl": False, "volume_filter": True},
     {"use_trailing_sl": True,  "volume_filter": True},
 ]
+
+
+def _timeframe_ms(tf: str) -> int:
+    _map = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
+    return int(tf[:-1]) * _map.get(tf[-1].lower(), 60_000)
+
+
+def _collect_symbols(db_dir: str) -> list[str]:
+    """Liest Symbol aus allen Bot-DBs (außer candles.db / news.db)."""
+    symbols = []
+    for db_path in sorted(glob(os.path.join(db_dir, "*.db"))):
+        if os.path.basename(db_path) in ("candles.db", "news.db"):
+            continue
+        try:
+            db  = StateDB(db_path)
+            sym = db.get_state("symbol")
+            db.close()
+            if sym:
+                symbols.append(sym)
+        except Exception:
+            pass
+    return symbols
+
+
+def _backfill_candles(
+    exchange: ccxt.Exchange,
+    conn_c,
+    symbol: str,
+    timeframe: str,
+    target: int = 2000,
+    batch: int = 720,
+):
+    """Füllt candles.db auf `target` Einträge auf, falls zu wenig vorhanden."""
+    current = cdb.count_candles(conn_c, symbol, timeframe)
+    if current >= target:
+        return
+    log = logging.getLogger("supervisor")
+    log.info(f"Backfill {symbol}: {current}/{target} Candles – hole historische Daten…")
+    row = conn_c.execute(
+        "SELECT MIN(ts) FROM candles WHERE symbol=? AND timeframe=?",
+        (symbol, timeframe),
+    ).fetchone()
+    tf_ms = _timeframe_ms(timeframe)
+    since = (row[0] - batch * tf_ms) if row and row[0] else None
+    fetched = 0
+    try:
+        for _ in range(5):  # max 5 Batches = 3600 Candles
+            if current + fetched >= target:
+                break
+            batch_c = exchange.fetch_ohlcv(symbol, timeframe, limit=batch, since=since)
+            if not batch_c:
+                break
+            inserted = cdb.upsert_candles(conn_c, symbol, timeframe, batch_c)
+            fetched += inserted
+            since = batch_c[0][0] - batch * tf_ms
+            time.sleep(1.5)
+    except Exception as e:
+        log.warning(f"Backfill {symbol}: {e}")
+    log.info(f"Backfill {symbol}: {fetched} neue Candles geladen (gesamt ca. {current + fetched})")
 
 
 def parse_args():
@@ -96,11 +156,13 @@ def _write(
     tmpl = REGIME_TEMPLATES[regime]
 
     if dry_run:
+        val_str = f" val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
         log.info(
             f"[DRY] {os.path.basename(db_path)}: regime={regime} | "
             f"strategie={best['name']} (f={best['fast']}/s={best['slow']}) | "
             f"trailing={best.get('use_trailing_sl',False)} vol={best.get('volume_filter',False)} | "
-            f"sim_pnl={best['pnl_pct']:+.2f}% | trades={best['num_trades']}"
+            f"sim_pnl={best['pnl_pct']:+.2f}%{val_str} SQN={best.get('sqn',0):.2f} | "
+            f"trades={best['num_trades']}"
         )
         return
 
@@ -109,16 +171,18 @@ def _write(
         db.set_state("supervisor_regime",          regime)
         db.set_state("supervisor_adx",             f"{adx_val:.1f}" if adx_val >= 0 else "–")
         db.set_state("supervisor_atr_pct",         f"{atr_pct:.2f}")
-        db.set_state("supervisor_rsi_buy_max",     str(tmpl["rsi_buy_max"]))
-        db.set_state("supervisor_rsi_sell_min",    str(tmpl["rsi_sell_min"]))
-        db.set_state("supervisor_atr_sl_mult",     str(tmpl["atr_sl_mult"]))
-        db.set_state("supervisor_atr_tp_mult",     str(tmpl["atr_tp_mult"]))
+        db.set_state("supervisor_rsi_buy_max",     str(best.get("rsi_buy_max",  tmpl["rsi_buy_max"])))
+        db.set_state("supervisor_rsi_sell_min",    str(best.get("rsi_sell_min", tmpl["rsi_sell_min"])))
+        db.set_state("supervisor_atr_sl_mult",     str(best.get("atr_sl_mult",  tmpl["atr_sl_mult"])))
+        db.set_state("supervisor_atr_tp_mult",     str(best.get("atr_tp_mult",  tmpl["atr_tp_mult"])))
         db.set_state("supervisor_strategy_name",   best["name"])
         db.set_state("supervisor_fast",            str(best["fast"]))
         db.set_state("supervisor_slow",            str(best["slow"]))
         db.set_state("supervisor_sim_pnl",         f"{best['pnl_pct']:+.2f}")
         db.set_state("supervisor_sim_trades",      str(best["num_trades"]))
         db.set_state("supervisor_last_update",     utcnow())
+        if best.get("val_pnl") is not None:
+            db.set_state("supervisor_val_pnl",     f"{best['val_pnl']:+.2f}")
         db.set_state("supervisor_use_trailing_sl", str(best.get("use_trailing_sl", False)))
         db.set_state("supervisor_volume_filter",   str(best.get("volume_filter", False)))
         db.log_supervisor_cycle(
@@ -177,17 +241,18 @@ def _cross_bot_learning(results: dict, dry_run: bool):
             if sym == winner_sym:
                 continue
 
-            # Winner-Strategie auf Ziel-Candles testen (mit Winner-Feature-Flags)
+            # Winner-Strategie auf Ziel-Candles testen (mit Winner-Feature-Flags + Winner-RSI/ATR)
+            w = winner_data["best"]
             shared = optimizer.simulate(
                 data["candles"],
-                winner_data["best"]["fast"],
-                winner_data["best"]["slow"],
-                rsi_buy_max=tmpl["rsi_buy_max"],
-                rsi_sell_min=tmpl["rsi_sell_min"],
-                atr_sl_mult=tmpl["atr_sl_mult"],
-                atr_tp_mult=tmpl["atr_tp_mult"],
-                use_trailing_sl=winner_data["best"].get("use_trailing_sl", False),
-                volume_filter=winner_data["best"].get("volume_filter", False),
+                w["fast"],
+                w["slow"],
+                rsi_buy_max=w.get("rsi_buy_max",  tmpl["rsi_buy_max"]),
+                rsi_sell_min=w.get("rsi_sell_min", tmpl["rsi_sell_min"]),
+                atr_sl_mult=w.get("atr_sl_mult",   tmpl["atr_sl_mult"]),
+                atr_tp_mult=w.get("atr_tp_mult",   tmpl["atr_tp_mult"]),
+                use_trailing_sl=w.get("use_trailing_sl", False),
+                volume_filter=w.get("volume_filter", False),
             )
             if shared is None:
                 continue
@@ -288,24 +353,47 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
             inserted = cdb.upsert_candles(conn_c, symbol, timeframe, fresh_candles)
             log.debug(f"{symbol}: {inserted} neue Candles gecacht")
 
-            # Historische Candles für Optimierung laden (wächst über Zeit auf 500)
-            history = cdb.load_candles(conn_c, symbol, timeframe, limit=500)
+            # Historische Candles für Optimierung laden (wächst über Zeit auf 2000)
+            history = cdb.load_candles(conn_c, symbol, timeframe, limit=2000)
             log.debug(f"{symbol}: {len(history)} Candles für Optimierung verfügbar")
 
-            # 24-Varianten-Optimierung (6 SMA × 4 Feature-Kombos)
+            # Walk-Forward: 80% Training / 20% Validation
+            MIN_WF_CANDLES = 200
+            if len(history) >= MIN_WF_CANDLES:
+                split = int(len(history) * 0.8)
+                train, val = history[:split], history[split:]
+            else:
+                train, val = history, None
+
+            # 72-Varianten-Optimierung (3 RSI/ATR × 6 SMA × 4 Feature-Kombos)
             tmpl = REGIME_TEMPLATES[regime]
             all_candidates = []
             for combo in FEATURE_COMBOS:
                 candidate = optimizer.best_variant(
-                    history,
-                    rsi_buy_max=tmpl["rsi_buy_max"],
-                    rsi_sell_min=tmpl["rsi_sell_min"],
-                    atr_sl_mult=tmpl["atr_sl_mult"],
-                    atr_tp_mult=tmpl["atr_tp_mult"],
+                    train,
+                    rsi_atr_variants=RSI_ATR_COMBOS[regime],
                     **combo,
                 )
                 all_candidates.append(candidate)
-            best = max(all_candidates, key=lambda x: (x["pnl_pct"], x["num_trades"]))
+            best = max(all_candidates, key=lambda x: (x.get("sqn", 0), x["pnl_pct"]))
+
+            # Walk-Forward Validation
+            if val:
+                val_r = optimizer.simulate(
+                    val, best["fast"], best["slow"],
+                    rsi_buy_max=best["rsi_buy_max"], rsi_sell_min=best["rsi_sell_min"],
+                    atr_sl_mult=best["atr_sl_mult"],  atr_tp_mult=best["atr_tp_mult"],
+                    use_trailing_sl=best.get("use_trailing_sl", False),
+                    volume_filter=best.get("volume_filter", False),
+                )
+                best["val_pnl"] = val_r["pnl_pct"] if val_r else None
+                if best["val_pnl"] is not None:
+                    log.info(
+                        f"Walk-Forward {symbol}: train={best['pnl_pct']:+.2f}% "
+                        f"val={best['val_pnl']:+.2f}% SQN={best.get('sqn', 0):.2f}"
+                    )
+            else:
+                best["val_pnl"] = None
 
             _write(db_path, regime, adx_val, atr_pct, best, dry_run)
 
@@ -340,6 +428,13 @@ def main():
     )
 
     exchange = build_exchange(ExchangeConfig())
+
+    # Einmaliger Backfill beim Start
+    candles_db_path = os.path.join(args.db_dir, "candles.db")
+    conn_init = cdb.open_db(candles_db_path)
+    for sym in _collect_symbols(args.db_dir):
+        _backfill_candles(exchange, conn_init, sym, args.timeframe)
+    conn_init.close()
 
     try:
         while True:

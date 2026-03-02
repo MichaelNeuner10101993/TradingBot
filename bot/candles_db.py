@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 CANDLES_DB  = "db/candles.db"
-MAX_CANDLES = 2016  # 7 Tage × 24h × 12 (5-Minuten-Candles)
+MAX_CANDLES = 8640  # 30 Tage × 288 Candles/Tag bei 5min
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS candles (
@@ -63,6 +63,14 @@ def upsert_candles(
     )
     conn.commit()
     return inserted
+
+
+def count_candles(conn: sqlite3.Connection, symbol: str, timeframe: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM candles WHERE symbol=? AND timeframe=?",
+        (symbol, timeframe),
+    ).fetchone()
+    return row[0] if row else 0
 
 
 def load_candles(
