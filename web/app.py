@@ -5,7 +5,9 @@ Liest alle DB-Dateien aus db/*.db und aggregiert sie.
 Start: python web/app.py
 """
 import os
+import re
 import sys
+import shlex
 import signal
 import subprocess
 from glob import glob
@@ -463,6 +465,28 @@ def api_balance():
     return jsonify(data)
 
 
+@app.route("/api/holdings")
+def api_holdings():
+    """Alle gehaltenen Coins mit Menge, Kurs, EUR-Wert und Bot-Status."""
+    bal  = _fetch_kraken_balance()
+    bots = {b["symbol"]: b for b in load_all_bots()}
+    result = []
+    for coin, d in bal.get("coins", {}).items():
+        sym = f"{coin}/EUR"
+        bot = bots.get(sym, {})
+        result.append({
+            "coin":        coin,
+            "symbol":      sym,
+            "amount":      d.get("amount", 0),
+            "price":       d.get("price", 0),
+            "value_eur":   d.get("value_eur", 0),
+            "has_bot":     sym in bots,
+            "bot_running": bot.get("process_running", False),
+        })
+    result.sort(key=lambda x: -x["value_eur"])
+    return jsonify(result)
+
+
 @app.route("/api/bot/start", methods=["POST"])
 def api_start_bot():
     try:
@@ -571,6 +595,49 @@ def api_delete_bot():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/direct_sell", methods=["POST"])
+def api_direct_sell():
+    """Verkauft sofort direkt über Kraken – ohne laufenden Bot."""
+    try:
+        from bot.config import ExchangeConfig
+        from bot.data_feed import build_exchange
+        data   = request.get_json(force=True)
+        symbol = data.get("symbol", "").strip().upper()
+        if not symbol or "/" not in symbol:
+            return jsonify({"ok": False, "error": "Ungültiges Symbol"}), 400
+
+        base = symbol.split("/")[0]
+        ex   = build_exchange(ExchangeConfig())
+        ex.load_markets()
+        bal  = ex.fetch_balance()
+        amount = float((bal.get(base) or {}).get("free", 0) or 0)
+        if amount <= 0:
+            return jsonify({"ok": False, "error": f"Kein {base}-Guthaben vorhanden"}), 400
+
+        try:
+            amount_p = float(ex.amount_to_precision(symbol, amount))
+        except Exception:
+            amount_p = round(amount, 8)
+        if amount_p <= 0:
+            return jsonify({"ok": False, "error": "Menge zu klein nach Precision-Rounding"}), 400
+
+        order = ex.create_market_sell_order(symbol, amount_p)
+        exit_price = order.get("average") or order.get("price") or 0
+
+        # DB-Trade schließen falls vorhanden
+        symbol_safe = symbol.replace("/", "_")
+        db_path = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if os.path.exists(db_path):
+            db = StateDB(db_path)
+            for trade in db.get_open_trades(symbol):
+                db.close_trade(trade["client_id"], "signal_close")
+            db.close()
+
+        return jsonify({"ok": True, "symbol": symbol, "amount": amount_p, "price": exit_price})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/bot/force_signal", methods=["POST"])
 def api_force_signal():
     """Setzt ein Force-Signal (BUY/SELL) das der Bot im nächsten Loop einmalig ausführt."""
@@ -630,6 +697,90 @@ def api_set_sltp_pct():
 
         db.close()
         return jsonify({"ok": True, "symbol": symbol, "updated_trades": updated})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _update_conf_args(symbol_safe: str, data: dict):
+    """Aktualisiert BOT_ARGS in bot.conf.d/<SYMBOL>.conf für Persistenz über Neustarts."""
+    conf_path = os.path.join(PROJECT_ROOT, "bot.conf.d", f"{symbol_safe}.conf")
+    if not os.path.exists(conf_path):
+        return
+    try:
+        with open(conf_path) as f:
+            content = f.read()
+        m = re.search(r'^BOT_ARGS=(.*)$', content, re.MULTILINE)
+        if not m:
+            return
+        args_list = shlex.split(m.group(1))
+        # data_key → (cli_flag, divisor_to_fraction)  divisor=100 wenn UI %-Wert sendet
+        ARG_MAP = {
+            "fast_period":    ("--fast",           1),
+            "slow_period":    ("--slow",           1),
+            "sl_pct":         ("--sl",             100),
+            "tp_pct":         ("--tp",             100),
+            "safety_buffer":  ("--safety-buffer",  100),
+        }
+        for key, (flag, div) in ARG_MAP.items():
+            val = data.get(key)
+            if val is None:
+                continue
+            val_str = str(round(float(val) / div, 6)).rstrip("0").rstrip(".")
+            if flag in args_list:
+                args_list[args_list.index(flag) + 1] = val_str
+            else:
+                args_list += [flag, val_str]
+        new_args = " ".join(args_list)
+        new_content = re.sub(r'^BOT_ARGS=.*$', f'BOT_ARGS={new_args}', content, flags=re.MULTILINE)
+        with open(conf_path, "w") as f:
+            f.write(new_content)
+    except Exception as e:
+        app.logger.warning(f"Conf-Update fehlgeschlagen für {symbol_safe}: {e}")
+
+
+@app.route("/api/bot/set_runtime_params", methods=["POST"])
+def api_set_runtime_params():
+    """Setzt alle Laufzeit-Parameter via pending_* Keys in bot_state.
+    Der Bot liest und löscht diese beim nächsten Loop (~60s).
+    Aktualisiert auch bot.conf.d/*.conf für Persistenz über Neustarts.
+    """
+    try:
+        data        = request.get_json(force=True)
+        symbol      = data.get("symbol", "").strip().upper()
+        symbol_safe = symbol.replace("/", "_")
+        db_path     = os.path.join(DB_DIR, f"{symbol_safe}.db")
+        if not os.path.exists(db_path):
+            return jsonify({"ok": False, "error": f"Keine DB für {symbol} gefunden"}), 404
+        db = StateDB(db_path)
+        written = []
+
+        # Boolean/Float-Keys direkt als pending_ speichern
+        for key in ("breakeven_enabled", "breakeven_pct",
+                    "trailing_sl", "trailing_sl_pct",
+                    "volume_filter", "volume_factor",
+                    "partial_tp", "partial_tp_fraction",
+                    "rsi_buy_max", "rsi_sell_min",
+                    "fast_period", "slow_period"):
+            val = data.get(key)
+            if val is not None:
+                db.set_state(f"pending_{key}", str(val))
+                written.append(key)
+
+        # SL/TP: UI sendet %, Bot erwartet Fraktion (0.03 statt 3)
+        for key in ("sl_pct", "tp_pct"):
+            val = data.get(key)
+            if val is not None:
+                db.set_state(f"pending_{key}", str(float(val) / 100))
+                written.append(key)
+
+        # Safety Buffer: UI sendet %, Bot erwartet Fraktion
+        if data.get("safety_buffer") is not None:
+            db.set_state("pending_safety_buffer", str(float(data["safety_buffer"]) / 100))
+            written.append("safety_buffer")
+
+        db.close()
+        _update_conf_args(symbol_safe, data)
+        return jsonify({"ok": True, "symbol": symbol, "updated": written})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

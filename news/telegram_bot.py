@@ -286,9 +286,11 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("stop_all",  self._cmd_stop_all))
         self._app.add_handler(CommandHandler("buy",       self._cmd_buy))
         self._app.add_handler(CommandHandler("sell",      self._cmd_sell))
-        self._app.add_handler(CommandHandler("set_sl",    self._cmd_set_sl))
-        self._app.add_handler(CommandHandler("set_tp",    self._cmd_set_tp))
-        self._app.add_handler(CommandHandler("params",    self._cmd_params))
+        self._app.add_handler(CommandHandler("set_sl",        self._cmd_set_sl))
+        self._app.add_handler(CommandHandler("set_tp",        self._cmd_set_tp))
+        self._app.add_handler(CommandHandler("set_breakeven", self._cmd_set_breakeven))
+        self._app.add_handler(CommandHandler("set_trailing",  self._cmd_set_trailing))
+        self._app.add_handler(CommandHandler("params",        self._cmd_params))
         self._app.add_handler(CommandHandler("holdings",    self._cmd_holdings))
         self._app.add_handler(CommandHandler("rendite",     self._cmd_rendite))
         self._app.add_handler(CommandHandler("supervisor",  self._cmd_supervisor))
@@ -296,6 +298,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("news",       self._cmd_news))
         self._app.add_handler(CommandHandler("set_alert_interval", self._cmd_set_alert_interval))
         self._app.add_handler(CommandHandler("erklaerung",         self._cmd_erklaerung))
+        self._app.add_handler(CommandHandler("set_params",         self._cmd_set_params))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -320,8 +323,10 @@ class TelegramNewsBot:
             ("stop_all",  "Alle Bots sofort stoppen"),
             ("buy",       "Force-Kauf (z.B. /buy BTC/EUR)"),
             ("sell",      "Force-Verkauf (z.B. /sell BTC/EUR)"),
-            ("set_sl",    "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
-            ("set_tp",    "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
+            ("set_sl",        "Stop-Loss setzen (z.B. /set_sl BTC/EUR 2.0)"),
+            ("set_tp",        "Take-Profit setzen (z.B. /set_tp BTC/EUR 4.0)"),
+            ("set_breakeven", "Breakeven setzen (z.B. /set_breakeven BTC/EUR 1.5 oder off)"),
+            ("set_trailing",  "Trailing-SL setzen (z.B. /set_trailing BTC/EUR 2.0 oder off)"),
             ("holdings",  "Alle gehaltenen Coins auf Kraken"),
             ("rendite",     "Detaillierte Rentabilität aller Bots"),
             ("supervisor",  "Supervisor-Erfahrung abrufen (z.B. /supervisor BTC/EUR)"),
@@ -329,6 +334,7 @@ class TelegramNewsBot:
             ("news",               "Letzte News (z.B. /news BTC/EUR)"),
             ("set_alert_interval", "Alert-Interval setzen (z.B. /set_alert_interval 2h)"),
             ("erklaerung",         "Parameter erklärt (z.B. /erklaerung trailing)"),
+            ("set_params",         "Mehrere Parameter setzen (z.B. /set_params BTC/EUR fast=7 slow=18 trailing=2)"),
             ("help",               "Alle Befehle anzeigen"),
         ]
         try:
@@ -509,7 +515,7 @@ class TelegramNewsBot:
                     f"🛑 {coin} stoppen",
                     callback_data=json.dumps({"action": "stop_bot", "symbol": coin, "event_id": event_ids[0]}),
                 ))
-        elif label == "bullish" and coin not in running:
+        elif label == "bullish" and "/" in coin and coin not in running:
             buttons.append(InlineKeyboardButton(
                 f"▶ {coin} starten",
                 callback_data=json.dumps({"action": "start_bot", "symbol": coin, "event_id": event_ids[0]}),
@@ -567,6 +573,8 @@ class TelegramNewsBot:
             await self._handle_stop_all(query, event_id)
         elif action == "start_bot":
             await self._handle_start_bot(query, data.get("symbol", ""), event_id)
+        elif action == "apply_supervisor":
+            await self._handle_apply_supervisor(query, data.get("symbol", ""))
         else:
             await query.edit_message_text("❓ Unbekannte Aktion")
 
@@ -628,6 +636,60 @@ class TelegramNewsBot:
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
 
+    async def _handle_apply_supervisor(self, query, symbol: str):
+        """Übernimmt die Supervisor-Empfehlung für ein Symbol via Button-Callback."""
+        result = self._apply_supervisor_for(symbol)
+        if result["ok"]:
+            p = result["params"]
+            lines = [f"✅ *Supervisor\\-Empfehlung für {_esc(symbol)} übernommen*"]
+            lines.append(f"Fast {p.get('fast_period')} / Slow {p.get('slow_period')}")
+            if p.get("trailing_sl") is not None:
+                lines.append(f"Trailing SL: {'✅' if p['trailing_sl'] else '❌'}")
+            if p.get("volume_filter") is not None:
+                lines.append(f"Volumen\\-Filter: {'✅' if p['volume_filter'] else '❌'}")
+            lines.append("_Wirkt beim nächsten Loop \\(~60s\\)_")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            await query.message.reply_text(
+                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+            )
+
+    def _apply_supervisor_for(self, symbol: str) -> dict:
+        """Liest Supervisor-Empfehlung aus DB und schreibt sie als pending_* Keys."""
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            bots = {b["symbol"]: b for b in resp.json()}
+            if symbol not in bots:
+                return {"ok": False, "error": f"Kein Bot für {symbol} gefunden"}
+            state = bots[symbol].get("state", {})
+            params: dict = {}
+            fast = state.get("supervisor_fast")
+            slow = state.get("supervisor_slow")
+            if fast:
+                params["fast_period"] = int(fast)
+            if slow:
+                params["slow_period"] = int(slow)
+            trailing = state.get("supervisor_use_trailing_sl")
+            if trailing is not None:
+                params["trailing_sl"] = trailing.lower() == "true" if isinstance(trailing, str) else bool(trailing)
+            volume = state.get("supervisor_volume_filter")
+            if volume is not None:
+                params["volume_filter"] = volume.lower() == "true" if isinstance(volume, str) else bool(volume)
+            vol_fac = state.get("volume_factor")
+            if vol_fac:
+                params["volume_factor"] = float(vol_fac)
+            trail_pct = state.get("trailing_sl_pct")
+            if trail_pct:
+                params["trailing_sl_pct"] = float(trail_pct) * 100  # in %
+            if not params:
+                return {"ok": False, "error": "Keine Supervisor-Empfehlung in DB gefunden"}
+            result = _call_set_runtime_params(self.cfg.web_api_base, symbol, **params)
+            result["params"] = params
+            return result
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ------------------------------------------------------------------
     # Commands
     # ------------------------------------------------------------------
@@ -666,9 +728,15 @@ class TelegramNewsBot:
             "⚡ *Manueller Handel*\n"
             "/buy BTC/EUR \\- Kauf erzwingen \\(nächster Loop\\)\n"
             "/sell BTC/EUR \\- Verkauf erzwingen\n\n"
-            "🎯 *SL/TP anpassen*\n"
+            "🎯 *SL/TP & Features anpassen*\n"
             "/set\\_sl BTC/EUR 2\\.0 \\- SL auf 2% unter Entry\n"
-            "/set\\_tp BTC/EUR 4\\.0 \\- TP auf 4% über Entry\n\n"
+            "/set\\_tp BTC/EUR 4\\.0 \\- TP auf 4% über Entry\n"
+            "/set\\_breakeven BTC/EUR 1\\.5 \\- Breakeven\\-SL bei 1,5% Gewinn \\(off = aus\\)\n"
+            "/set\\_trailing BTC/EUR 2\\.0 \\- Trailing\\-SL mit 2% \\(off = aus\\)\n"
+            "_Alle Änderungen wirken ohne Neustart beim nächsten Loop \\(\\~60s\\)_\n\n"
+            "💬 *Freitext\\-Beispiele*\n"
+            "_starte bitcoin · stoppe ripple · kauf ethereum_\n"
+            "_breakeven xrp 1\\.5 · trailing btc 2 · sl eth 3_\n\n"
             "📖 *Hilfe*\n"
             "/erklaerung \\- Parameter einfach erklärt \\(z\\.B\\. /erklaerung trailing\\)\n"
             "/erklaerung sl \\| tp \\| sma \\| trailing \\| breakeven \\| partial \\| htf \\| volumen \\| cooldown \\| buffer \\| rsi \\| atr",
@@ -1353,11 +1421,229 @@ class TelegramNewsBot:
             await self._cmd_set_tp(update, context)
             return
 
+        # breakeven setzen: "breakeven btc 1.5" / "be xrp aus" / "breakeven ripple off"
+        m = re.search(r'\b(?:breakeven|be)\s+([\w/]+)\s+([\w.%]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1)), m.group(2)]
+            await self._cmd_set_breakeven(update, context)
+            return
+
+        # trailing setzen: "trailing btc 2" / "trail eth aus" / "trailing bitcoin 1.5"
+        m = re.search(r'\b(?:trailing|trail)\s+([\w/]+)\s+([\w.%]+)', text)
+        if m:
+            context.args = [_normalize_symbol(m.group(1)), m.group(2)]
+            await self._cmd_set_trailing(update, context)
+            return
+
+        # Supervisor-Empfehlung übernehmen
+        m = re.search(
+            r'\b(?:empfehlung|supervisor.?empfehlung|übernehm|anwend|apply)\b.*?([\w/]{2,6})(?:\s*/\s*eur)?'
+            r'|(?:[\w/]{2,6})(?:\s*/\s*eur)?\s+(?:empfehlung|übernehm)',
+            text,
+        )
+        if m:
+            raw = m.group(1) or re.search(r'([\w/]{2,6})(?:\s*/\s*eur)?', text)
+            sym = _normalize_symbol(raw.group(1) if hasattr(raw, 'group') else raw)
+            result = self._apply_supervisor_for(sym)
+            if result["ok"]:
+                p = result["params"]
+                lines = [f"✅ <b>Supervisor-Empfehlung für {sym} übernommen</b>"]
+                if "fast_period" in p: lines.append(f"Fast {p['fast_period']} / Slow {p.get('slow_period', '?')}")
+                if "trailing_sl" in p: lines.append(f"Trailing SL: {'✅' if p['trailing_sl'] else '❌'}")
+                if "volume_filter" in p: lines.append(f"Volumen-Filter: {'✅' if p['volume_filter'] else '❌'}")
+                lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
+                await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            else:
+                await update.message.reply_text(f"❌ {result['error']}", parse_mode="HTML")
+            return
+
+        # Fast MA: "fast btc 7" / "setze fast auf 7 für btc" / "btc fast 7"
+        m = re.search(r'\bfast\s+([\w/]+)\s+([\d]+)|\bfast\s+(\d+)\s+(?:für\s+)?([\w/]+)|([\w/]+)\s+fast\s+(\d+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1) or m.group(4) or m.group(5))
+            val = int(m.group(2) or m.group(3) or m.group(6))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym, fast_period=val)
+            msg = f"✅ <b>{sym}</b> Fast MA → {val}" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # Slow MA: "slow btc 21"
+        m = re.search(r'\bslow\s+([\w/]+)\s+([\d]+)|\bslow\s+(\d+)\s+(?:für\s+)?([\w/]+)|([\w/]+)\s+slow\s+(\d+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1) or m.group(4) or m.group(5))
+            val = int(m.group(2) or m.group(3) or m.group(6))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym, slow_period=val)
+            msg = f"✅ <b>{sym}</b> Slow MA → {val}" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # Volumen-Filter: "volumen btc 1.5" / "volume btc an" / "volumen btc aus"
+        m = re.search(r'\b(?:vol(?:umen?|ume?[\s\-]?filter)?)\s+([\w/]+)\s+([\w.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            raw = m.group(2).lower()
+            if raw in ("an", "on", "true", "ja", "yes", "aktivieren"):
+                result = _call_set_runtime_params(self.cfg.web_api_base, sym, volume_filter=True)
+                msg = f"✅ <b>{sym}</b> Volumen-Filter aktiviert"
+            elif raw in ("aus", "off", "false", "nein", "no", "deaktivieren"):
+                result = _call_set_runtime_params(self.cfg.web_api_base, sym, volume_filter=False)
+                msg = f"✅ <b>{sym}</b> Volumen-Filter deaktiviert"
+            else:
+                try:
+                    fac = float(raw.rstrip("%"))
+                    result = _call_set_runtime_params(self.cfg.web_api_base, sym, volume_filter=True, volume_factor=fac)
+                    msg = f"✅ <b>{sym}</b> Volumen-Filter aktiviert, Faktor {fac}"
+                except ValueError:
+                    result = {"ok": False, "error": f"Ungültiger Wert: {raw}"}
+                    msg = f"❌ {result['error']}"
+            if not result["ok"]: msg = f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # Partial TP: "partial btc 50" / "partial btc aus"
+        m = re.search(r'\bpartial(?:[\s\-]?tp)?\s+([\w/]+)\s+([\w.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            raw = m.group(2).lower()
+            if raw in ("aus", "off", "false", "nein"):
+                result = _call_set_runtime_params(self.cfg.web_api_base, sym, partial_tp=False)
+                msg = f"✅ <b>{sym}</b> Partial-TP deaktiviert"
+            else:
+                try:
+                    pct = float(raw.rstrip("%"))
+                    result = _call_set_runtime_params(self.cfg.web_api_base, sym, partial_tp=True, partial_tp_fraction=pct)
+                    msg = f"✅ <b>{sym}</b> Partial-TP aktiviert, {pct:.0f}% beim ersten Hit"
+                except ValueError:
+                    result = {"ok": False, "error": f"Ungültiger Wert: {raw}"}
+                    msg = f"❌ {result['error']}"
+            if not result["ok"]: msg = f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # RSI: "rsi buy btc 60" / "rsi kauf btc 60" / "rsi sell btc 35" / "rsi btc 60 35"
+        m = re.search(r'\brsi\s+(?:buy|kauf(?:max)?)\s+([\w/]+)\s+([\d.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym, rsi_buy_max=float(m.group(2)))
+            msg = f"✅ <b>{sym}</b> RSI Kauf-Max → {m.group(2)}" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        m = re.search(r'\brsi\s+(?:sell|verkauf(?:min)?)\s+([\w/]+)\s+([\d.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym, rsi_sell_min=float(m.group(2)))
+            msg = f"✅ <b>{sym}</b> RSI Verkauf-Min → {m.group(2)}" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        m = re.search(r'\brsi\s+([\w/]+)\s+([\d.]+)\s+([\d.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym,
+                                              rsi_buy_max=float(m.group(2)), rsi_sell_min=float(m.group(3)))
+            msg = f"✅ <b>{sym}</b> RSI Kauf-Max {m.group(2)} / Verkauf-Min {m.group(3)}" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # Safety Buffer: "buffer btc 10" / "safety buffer btc 10"
+        m = re.search(r'\b(?:safety[\s\-]?buffer|buffer|sicherheitspuffer|puffer)\s+([\w/]+)\s+([\d.]+)', text)
+        if m:
+            sym = _normalize_symbol(m.group(1))
+            result = _call_set_runtime_params(self.cfg.web_api_base, sym, safety_buffer=float(m.group(2)))
+            msg = f"✅ <b>{sym}</b> Safety Buffer → {m.group(2)}%" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg + "\n<i>~60s</i>", parse_mode="HTML")
+            return
+
+        # Multi-Param Catch-all: "btc fast=7 slow=18 trailing=2 sl=2"
+        sym_m = re.search(r'\b([A-Za-z]{2,6})(?:/EUR)?\b', text.upper())
+        kv_pairs = re.findall(r'(\w+)\s*[=:]\s*([\w.]+)', text)
+        if sym_m and kv_pairs:
+            sym = _normalize_symbol(sym_m.group(1))
+            params = _parse_multi_params([f"{k}={v}" for k, v in kv_pairs])
+            if params:
+                result = _call_set_runtime_params(self.cfg.web_api_base, sym, **params)
+                if result["ok"]:
+                    lines = [f"✅ <b>{sym}</b> – Parameter gesetzt:"]
+                    for k, v in params.items():
+                        lines.append(f"  • {k} = {v}")
+                    lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
+                    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+                else:
+                    await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
+                return
+
+        # LLM-Fallback: Claude Haiku als Freitext-Parser
+        running = list(_get_running_symbols(self.cfg.web_api_base))
+        parsed  = _llm_parse_command(text, running)
+        action  = parsed.get("action", "unknown")
+        symbol  = parsed.get("symbol", "")
+
+        if action == "status":
+            await self._cmd_status(update, context); return
+        elif action == "holdings":
+            await self._cmd_holdings(update, context); return
+        elif action == "portfolio":
+            await self._cmd_portfolio(update, context); return
+        elif action == "rendite":
+            await self._cmd_rendite(update, context); return
+        elif action == "help":
+            await self._cmd_help(update, context); return
+        elif action == "stop_all":
+            await self._cmd_stop_all(update, context); return
+        elif action == "start_bot" and symbol:
+            context.args = [symbol]
+            await self._cmd_start_bot(update, context); return
+        elif action == "stop_bot" and symbol:
+            context.args = [symbol]
+            await self._cmd_stop_bot(update, context); return
+        elif action == "force_buy" and symbol:
+            result = _call_force_signal(self.cfg.web_api_base, symbol, "BUY")
+            msg = f"📈 Force-BUY für <b>{symbol}</b> gesetzt.\n<i>Wird beim nächsten Loop (~60s) ausgeführt.</i>" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg, parse_mode="HTML"); return
+        elif action == "force_sell" and symbol:
+            result = _call_force_signal(self.cfg.web_api_base, symbol, "SELL")
+            msg = f"📉 Force-SELL für <b>{symbol}</b> gesetzt.\n<i>Wird beim nächsten Loop (~60s) ausgeführt.</i>" if result["ok"] else f"❌ {result.get('error')}"
+            await update.message.reply_text(msg, parse_mode="HTML"); return
+        elif action == "set_sl" and symbol:
+            context.args = [symbol, str(parsed.get("value", 2.0))]
+            await self._cmd_set_sl(update, context); return
+        elif action == "set_tp" and symbol:
+            context.args = [symbol, str(parsed.get("value", 4.0))]
+            await self._cmd_set_tp(update, context); return
+        elif action == "set_params" and symbol:
+            params = parsed.get("params", {})
+            if params:
+                result = _call_set_runtime_params(self.cfg.web_api_base, symbol, **params)
+                if result["ok"]:
+                    lines = [f"✅ <b>{symbol}</b> – Parameter gesetzt:"]
+                    for k, v in params.items():
+                        lines.append(f"  • {k} = {v}")
+                    lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
+                    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+                else:
+                    await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
+                return
+        elif action == "apply_supervisor" and symbol:
+            result = self._apply_supervisor_for(symbol)
+            if result["ok"]:
+                p = result["params"]
+                lines = [f"✅ <b>Supervisor-Empfehlung für {symbol} übernommen</b>"]
+                for k, v in p.items():
+                    lines.append(f"  • {k} = {v}")
+                lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
+                await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            else:
+                await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
+            return
+
         await update.message.reply_text(
-            "❓ Nicht verstanden\\.\n\n"
-            "Beispiele: _status_ · _holdings_ · _portfolio_ · "
-            "_stoppe BTC_ · _starte ETH_ · _kauf BTC_ · _sl BTC 2_ · _hilfe_",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            "❓ Nicht verstanden.\n\n"
+            "Du kannst einfach schreiben was du willst, z.B.:\n"
+            "<i>zeig mir den status</i> · <i>starte bitcoin</i> · <i>stoppe eth</i> · "
+            "<i>kauf ada</i> · <i>setze sl bei btc auf 2%</i> · "
+            "<i>fast ma bei eth auf 7 und volume filter an</i>",
+            parse_mode="HTML",
         )
 
     async def _cmd_start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1548,6 +1834,100 @@ class TelegramNewsBot:
                 f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
             )
 
+    async def _cmd_set_breakeven(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt Breakeven-Trigger. /set_breakeven BTC/EUR 1.5  oder  /set_breakeven BTC/EUR off"""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Verwendung:\n"
+                "`/set_breakeven BTC/EUR 1\\.5` – Breakeven bei 1,5% Gewinn aktivieren\n"
+                "`/set_breakeven BTC/EUR off` – Breakeven deaktivieren\n\n"
+                "_Wirkt beim nächsten Bot\\-Loop \\(\\~60s\\), kein Neustart nötig\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = _normalize_symbol(context.args[0])
+        raw    = context.args[1].lower()
+        if raw in ("off", "aus", "deaktivieren", "false", "0", "no", "nein"):
+            result = _call_set_runtime_params(self.cfg.web_api_base, symbol, breakeven_enabled="false")
+            if result["ok"]:
+                await update.message.reply_text(
+                    f"✅ *{_esc(symbol)}* Breakeven\\-SL deaktiviert\\.\n"
+                    f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            else:
+                await update.message.reply_text(f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        try:
+            pct = float(raw.strip("%"))
+            if pct <= 0 or pct >= 20:
+                raise ValueError("Wert muss zwischen 0 und 20 liegen")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        result = _call_set_runtime_params(
+            self.cfg.web_api_base, symbol,
+            breakeven_enabled="true", breakeven_pct=str(pct / 100),
+        )
+        if result["ok"]:
+            await update.message.reply_text(
+                f"✅ *{_esc(symbol)}* Breakeven\\-SL auf `{_esc(f'{pct}%')}` Trigger gesetzt\\.\n"
+                f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def _cmd_set_trailing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt Trailing-SL. /set_trailing BTC/EUR 2.0  oder  /set_trailing BTC/EUR off"""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Verwendung:\n"
+                "`/set_trailing BTC/EUR 2\\.0` – Trailing\\-SL mit 2% aktivieren\n"
+                "`/set_trailing BTC/EUR off` – Trailing\\-SL deaktivieren\n\n"
+                "_Wirkt beim nächsten Bot\\-Loop \\(\\~60s\\), kein Neustart nötig\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+        symbol = _normalize_symbol(context.args[0])
+        raw    = context.args[1].lower()
+        if raw in ("off", "aus", "deaktivieren", "false", "0", "no", "nein"):
+            result = _call_set_runtime_params(self.cfg.web_api_base, symbol, trailing_sl="false")
+            if result["ok"]:
+                await update.message.reply_text(
+                    f"✅ *{_esc(symbol)}* Trailing\\-SL deaktiviert\\.\n"
+                    f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            else:
+                await update.message.reply_text(f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        try:
+            pct = float(raw.strip("%"))
+            if pct <= 0 or pct >= 20:
+                raise ValueError("Wert muss zwischen 0 und 20 liegen")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+            return
+        result = _call_set_runtime_params(
+            self.cfg.web_api_base, symbol,
+            trailing_sl="true", trailing_sl_pct=str(pct / 100),
+        )
+        if result["ok"]:
+            await update.message.reply_text(
+                f"✅ *{_esc(symbol)}* Trailing\\-SL auf `{_esc(f'{pct}%')}` gesetzt\\.\n"
+                f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+        else:
+            await update.message.reply_text(f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
+
     async def _cmd_params(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Zeigt aktuelle Parameter eines Bots."""
         if not self._is_authorized(update):
@@ -1588,6 +1968,39 @@ class TelegramNewsBot:
             )
 
     # ------------------------------------------------------------------
+    # Mehrfach-Parameter setzen
+    # ------------------------------------------------------------------
+
+    async def _cmd_set_params(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Setzt mehrere Parameter auf einmal.
+        /set_params BTC/EUR fast=7 slow=18 trailing=2 breakeven=1 volume=1.5 partial=50 sl=2 tp=5 buffer=10
+        """
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Verwendung:\n"
+                "<code>/set_params BTC/EUR fast=7 slow=18 trailing=2 breakeven=1 volume=1.5 partial=50 sl=2 tp=5 buffer=10</code>\n\n"
+                "Oder Freitext: <i>btc fast=7 slow=18 trailing=2</i>",
+                parse_mode="HTML",
+            )
+            return
+        symbol = _normalize_symbol(context.args[0])
+        params = _parse_multi_params(context.args[1:])
+        if not params:
+            await update.message.reply_text("❌ Keine gültigen Parameter gefunden.", parse_mode="HTML")
+            return
+        result = _call_set_runtime_params(self.cfg.web_api_base, symbol, **params)
+        if result["ok"]:
+            lines = [f"✅ <b>{symbol}</b> – Parameter gesetzt:"]
+            for k, v in params.items():
+                lines.append(f"  • {k} = {v}")
+            lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        else:
+            await update.message.reply_text(f"❌ Fehler: {result['error']}", parse_mode="HTML")
+
     # Parameter-Erklärungen
     # ------------------------------------------------------------------
 
@@ -1853,6 +2266,7 @@ def _call_start_api(base_url: str, symbol: str, overrides: dict | None = None) -
         params.update(overrides)
 
     try:
+        params["symbol"] = symbol
         resp = requests.post(f"{base_url}/api/bot/start", json=params, timeout=10)
         resp.raise_for_status()
         return {"ok": True, "symbol": symbol, "params": params}
@@ -1908,9 +2322,110 @@ def _fmt_p(price: float) -> str:
     return f"{price:.8f}"
 
 
-def _normalize_symbol(s: str) -> str:
-    """btc → BTC/EUR, btc/eur → BTC/EUR"""
-    s = s.upper()
+# Klarnamen → Ticker-Symbol (z.B. "ripple" → "XRP")
+COIN_ALIASES: dict[str, str] = {
+    "bitcoin":   "BTC",
+    "ethereum":  "ETH",
+    "ether":     "ETH",
+    "ripple":    "XRP",
+    "trump":     "TRUMP",
+    "pepe":      "PEPE",
+    "synthetix": "SNX",
+    "dogecoin":  "DOGE",
+    "doge":      "DOGE",
+    "solana":    "SOL",
+    "sol":       "SOL",
+    "cardano":   "ADA",
+    "ada":       "ADA",
+    "polkadot":  "DOT",
+    "dot":       "DOT",
+    "litecoin":  "LTC",
+    "ltc":       "LTC",
+}
+
+
+def _parse_multi_params(args: list[str]) -> dict:
+    """
+    Parst eine Liste von key=value Tokens und gibt ein Dict für _call_set_runtime_params zurück.
+    Unterstützt: fast=7, slow=18, sl=2, tp=5, trailing=2, trailing=off,
+                 breakeven=1, breakeven=off, volume=1.5, volume=off,
+                 partial=50, partial=off, buffer=10, rsi_buy=65, rsi_sell=35
+    """
+    OFF = {"off", "aus", "false", "nein", "no", "0"}
+    ON  = {"on",  "an",  "true",  "ja",   "yes"}
+    params = {}
+    for token in args:
+        if "=" in token:
+            k, _, v = token.partition("=")
+        elif ":" in token:
+            k, _, v = token.partition(":")
+        else:
+            continue
+        k = k.lower().strip()
+        v = v.lower().strip().rstrip("%")
+        try:
+            if k in ("fast", "fast_period"):
+                params["fast_period"] = int(v)
+            elif k in ("slow", "slow_period"):
+                params["slow_period"] = int(v)
+            elif k in ("sl", "sl_pct", "stop_loss"):
+                params["sl_pct"] = float(v)
+            elif k in ("tp", "tp_pct", "take_profit"):
+                params["tp_pct"] = float(v)
+            elif k in ("buffer", "safety_buffer"):
+                params["safety_buffer"] = float(v)
+            elif k in ("rsi_buy", "rsi_buy_max"):
+                params["rsi_buy_max"] = float(v)
+            elif k in ("rsi_sell", "rsi_sell_min"):
+                params["rsi_sell_min"] = float(v)
+            elif k in ("trailing", "trail"):
+                if v in OFF:
+                    params["trailing_sl"] = False
+                elif v in ON:
+                    params["trailing_sl"] = True
+                else:
+                    params["trailing_sl"] = True
+                    params["trailing_sl_pct"] = float(v)
+            elif k in ("trailing_pct", "trail_pct"):
+                params["trailing_sl_pct"] = float(v)
+            elif k in ("breakeven", "be"):
+                if v in OFF:
+                    params["breakeven_enabled"] = False
+                elif v in ON:
+                    params["breakeven_enabled"] = True
+                else:
+                    params["breakeven_enabled"] = True
+                    params["breakeven_pct"] = float(v)
+            elif k in ("volume", "vol", "volume_filter"):
+                if v in OFF:
+                    params["volume_filter"] = False
+                elif v in ON:
+                    params["volume_filter"] = True
+                else:
+                    params["volume_filter"] = True
+                    params["volume_factor"] = float(v)
+            elif k in ("partial", "partial_tp"):
+                if v in OFF:
+                    params["partial_tp"] = False
+                elif v in ON:
+                    params["partial_tp"] = True
+                else:
+                    params["partial_tp"] = True
+                    params["partial_tp_fraction"] = float(v)
+        except (ValueError, TypeError):
+            pass
+    return params
+
+
+def _normalize_symbol(s: str | None) -> str:
+    """btc → BTC/EUR,  ripple → XRP/EUR,  btc/eur → BTC/EUR"""
+    if not s:
+        return ""
+    low = s.lower().strip()
+    if low in COIN_ALIASES:
+        s = COIN_ALIASES[low]
+    else:
+        s = s.upper()
     if "/" not in s:
         s = f"{s}/EUR"
     return s
@@ -1943,3 +2458,79 @@ def _call_set_sltp_pct(
             return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _call_set_runtime_params(base_url: str, symbol: str, **kwargs) -> dict:
+    """Schreibt pending_* Override-Keys in bot_state (werden im nächsten Loop angewendet)."""
+    try:
+        payload = {"symbol": symbol, **kwargs}
+        resp = requests.post(f"{base_url}/api/bot/set_runtime_params", json=payload, timeout=10)
+        resp.raise_for_status()
+        return {"ok": True}
+    except requests.HTTPError as e:
+        try:
+            return {"ok": False, "error": e.response.json().get("error", str(e))}
+        except Exception:
+            return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _llm_parse_command(text: str, running_symbols: list[str]) -> dict:
+    """Nutzt Claude Haiku um Freitext in eine strukturierte Aktion umzuwandeln."""
+    import os
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {"action": "unknown"}
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        system = (
+            "Du bist ein Assistent für einen Krypto-Trading-Bot auf Kraken.\n"
+            "Analysiere die Benutzernachricht und gib NUR ein JSON-Objekt zurück – kein Markdown, keine Erklärung.\n\n"
+            "Verfügbare Aktionen:\n"
+            "- status: Bot-Status aller Bots anzeigen\n"
+            "- holdings: Gehaltene Coins auf Kraken anzeigen\n"
+            "- portfolio: Offene Positionen + P&L\n"
+            "- rendite: Detaillierte Rendite-Auswertung\n"
+            "- help: Hilfe anzeigen\n"
+            "- start_bot: Bot starten (benötigt symbol)\n"
+            "- stop_bot: Bot stoppen (benötigt symbol)\n"
+            "- stop_all: Alle Bots sofort stoppen\n"
+            "- force_buy: Sofortigen Kauf auslösen (benötigt symbol)\n"
+            "- force_sell: Sofortigen Verkauf auslösen (benötigt symbol)\n"
+            "- set_sl: Stop-Loss in % setzen (benötigt symbol, value als Zahl z.B. 2.5)\n"
+            "- set_tp: Take-Profit in % setzen (benötigt symbol, value als Zahl z.B. 5.0)\n"
+            "- set_params: Einen oder mehrere Parameter setzen (benötigt symbol + params-Objekt)\n"
+            "- apply_supervisor: Supervisor-Empfehlung übernehmen (benötigt symbol)\n"
+            "- unknown: Wenn keine sinnvolle Aktion erkennbar\n\n"
+            f"Aktuell laufende Bots: {', '.join(running_symbols) if running_symbols else 'keine'}\n\n"
+            "Symbol-Normalisierung: IMMER als 'BTC/EUR' Format.\n"
+            "Beispiele: btc→BTC/EUR, eth→ETH/EUR, ada→ADA/EUR, xrp→XRP/EUR, ripple→XRP/EUR, bitcoin→BTC/EUR, ethereum→ETH/EUR\n\n"
+            "params-Objekt (alle optional):\n"
+            "  fast_period (int), slow_period (int),\n"
+            "  sl_pct (float, z.B. 0.03 für 3%), tp_pct (float, z.B. 0.06 für 6%),\n"
+            "  trailing_sl (bool), trailing_sl_pct (float in %, z.B. 2.0),\n"
+            "  breakeven (bool), breakeven_pct (float in %, z.B. 1.0),\n"
+            "  volume_filter (bool), volume_factor (float, z.B. 1.2),\n"
+            "  partial_tp (bool), partial_tp_fraction (float 0-1, z.B. 0.5),\n"
+            "  rsi_buy_max (float), rsi_sell_min (float),\n"
+            "  safety_buffer (float in %, z.B. 10.0)\n\n"
+            "Beispiel-Ausgaben:\n"
+            '{"action":"set_params","symbol":"BTC/EUR","params":{"fast_period":7,"volume_filter":true}}\n'
+            '{"action":"set_sl","symbol":"ETH/EUR","value":2.5}\n'
+            '{"action":"start_bot","symbol":"ADA/EUR"}\n'
+            '{"action":"status"}'
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=system,
+            messages=[{"role": "user", "content": text}],
+        )
+        raw = response.content[0].text.strip()
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else {"action": "unknown"}
+    except Exception as e:
+        logger.warning("LLM-Parse fehlgeschlagen: %s", e)
+        return {"action": "unknown"}

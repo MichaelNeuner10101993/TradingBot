@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="60">
   <title>Trading Bots</title>
   <script src="/static/chart.min.js"></script>
   <style>
@@ -317,6 +316,19 @@
     }
     .delete-btn:hover { border-color: #f85149; color: #f85149; }
 
+    .edit-btn {
+      background: transparent;
+      border: 1px solid #21262d;
+      border-radius: 4px;
+      color: #8b949e;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      padding: 2px 8px;
+      margin-left: 6px;
+    }
+    .edit-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+
     .add-bot-btn {
       background: #1c2d3f;
       border: 1px solid #1f4e2e;
@@ -339,6 +351,11 @@
       color: #c9d1d9;
       font-family: 'Courier New', monospace;
       font-size: 13px;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      margin: 0;
       max-width: 420px;
       padding: 24px;
       width: 90vw;
@@ -550,6 +567,31 @@
   </button>
 </div>
 
+<!-- ── Bestände ──────────────────────────────────────────── -->
+<div class="bot-section" id="holdings-section">
+  <div class="bot-section-header" onclick="toggle(this)">
+    <span class="chevron">▼</span>
+    <span>📦 Bestände</span>
+  </div>
+  <div class="section-body" style="overflow-x:auto">
+    <div id="holdings-loading" style="color:#8b949e;padding:1rem 0">Lade…</div>
+    <table id="holdings-table" class="trade-table" style="display:none;width:100%">
+      <thead>
+        <tr>
+          <th>Coin</th>
+          <th>Menge</th>
+          <th>EUR-Wert</th>
+          <th>Kurs</th>
+          <th style="min-width:220px">Zielkurs</th>
+          <th>Gewinn</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="holdings-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- ── Per-Bot Detail Sections ──────────────────────────── -->
 {% for bot in bots %}
 <div class="bot-section" id="bot-{{ loop.index }}" data-symbol="{{ bot.symbol }}">
@@ -610,6 +652,26 @@
     <button class="delete-btn" data-role="delete-btn"
             style="{{ 'display:none' if _running else '' }}"
             onclick="openDeleteDialog(event, '{{ bot.symbol }}')">✕</button>
+    <button class="edit-btn"
+            onclick="openParamsDialog(event, this)"
+            data-edit-cfg='{{ {
+                "symbol":              bot.symbol,
+                "fast_period":         bot.state.get("fast_period", "9")|int,
+                "slow_period":         bot.state.get("slow_period", "21")|int,
+                "sl_pct":              (bot.state.get("sl_pct", "0.03")|float * 100)|round(2),
+                "tp_pct":              (bot.state.get("tp_pct", "0.06")|float * 100)|round(2),
+                "safety_buffer":       (bot.state.get("safety_buffer_pct", "0.10")|float * 100)|round(1),
+                "rsi_buy_max":         bot.state.get("effective_rsi_buy_max", "65")|float,
+                "rsi_sell_min":        bot.state.get("effective_rsi_sell_min", "35")|float,
+                "trailing_sl":         bot.state.get("use_trailing_sl", "False") == "True",
+                "trailing_sl_pct":     (bot.state.get("trailing_sl_pct", "0.02")|float * 100)|round(1),
+                "breakeven_enabled":   bot.state.get("breakeven_enabled", "False") == "True",
+                "breakeven_pct":       (bot.state.get("breakeven_trigger_pct", "0.01")|float * 100)|round(1),
+                "volume_filter":       bot.state.get("volume_filter", "False") == "True",
+                "volume_factor":       bot.state.get("volume_factor", "1.2")|float,
+                "partial_tp":          bot.state.get("partial_tp_enabled", "False") == "True",
+                "partial_tp_fraction": (bot.state.get("partial_tp_fraction", "0.5")|float * 100)|round(0)|int,
+            } | tojson }}'>⚙</button>
   </div>
 
   {% if not bot.get('error') %}
@@ -836,6 +898,70 @@
 
 <footer>Trading Bot Dashboard · Cards live alle 5s · Seite neu alle 60s · {{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</footer>
 
+<!-- ── Parameter-Edit Dialog ─────────────────────────────── -->
+<dialog id="params-dialog">
+  <h3>⚙ Parameter – <span id="pd-title"></span></h3>
+  <input type="hidden" id="pd-symbol">
+  <div class="form-row">
+    <label>Fast MA <span class="tip" data-tip="Schneller gleitender Durchschnitt. Änderung wirkt beim nächsten Loop.">ⓘ</span>
+      <input id="pd-fast" type="number" min="2" max="200">
+    </label>
+    <label>Slow MA <span class="tip" data-tip="Langsamer gleitender Durchschnitt.">ⓘ</span>
+      <input id="pd-slow" type="number" min="3" max="500">
+    </label>
+  </div>
+  <div class="form-row">
+    <label>Stop-Loss % <span class="tip" data-tip="Fallback-SL für neue Trades (wenn ATR nicht verfügbar). Offene Trades werden NICHT geändert.">ⓘ</span>
+      <input id="pd-sl" type="number" step="0.1" min="0.5" max="20">
+    </label>
+    <label>Take-Profit % <span class="tip" data-tip="Fallback-TP für neue Trades.">ⓘ</span>
+      <input id="pd-tp" type="number" step="0.1" min="0.5" max="50">
+    </label>
+  </div>
+  <div class="form-row">
+    <label>RSI Kauf-Max <span class="tip" data-tip="Kein BUY wenn RSI über diesem Wert (Standard: 65).">ⓘ</span>
+      <input id="pd-rsi-buy" type="number" step="1" min="30" max="90">
+    </label>
+    <label>RSI Verkauf-Min <span class="tip" data-tip="Kein SELL wenn RSI unter diesem Wert (Standard: 35).">ⓘ</span>
+      <input id="pd-rsi-sell" type="number" step="1" min="10" max="70">
+    </label>
+  </div>
+  <div class="form-row">
+    <label>Safety Buffer % <span class="tip" data-tip="Anteil des Kapitals der nie investiert wird (z.B. 10%).">ⓘ</span>
+      <input id="pd-buf" type="number" step="1" min="0" max="50">
+    </label>
+    <label></label>
+  </div>
+  <details class="adv-settings">
+    <summary>Erweiterte Optionen</summary>
+    <div class="form-row" style="margin-top:8px">
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="pd-trail-on"> Trailing SL</span>
+        <input id="pd-trail-pct" type="number" step="0.1" min="0.1" max="10" placeholder="% Abstand">
+      </label>
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="pd-be-on"> Breakeven SL</span>
+        <input id="pd-be-pct" type="number" step="0.1" min="0.1" max="10" placeholder="Trigger %">
+      </label>
+    </div>
+    <div class="form-row">
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="pd-vol-on"> Volumen-Filter</span>
+        <input id="pd-vol-fac" type="number" step="0.1" min="1.0" max="5.0" placeholder="Faktor">
+      </label>
+      <label>
+        <span class="feat-cb"><input type="checkbox" id="pd-ptp-on"> Partial Take-Profit</span>
+        <input id="pd-ptp-pct" type="number" step="5" min="10" max="90" placeholder="Anteil %">
+      </label>
+    </div>
+  </details>
+  <p style="font-size:10px;color:#484f58;margin-top:12px">Änderungen werden beim nächsten Bot-Loop (~60s) übernommen und in der Konfigurationsdatei gespeichert.</p>
+  <div class="form-actions">
+    <button class="btn-secondary" onclick="document.getElementById('params-dialog').close()">Abbrechen</button>
+    <button class="btn-primary" id="pd-save-btn" onclick="saveParams()">Übernehmen</button>
+  </div>
+</dialog>
+
 <!-- ── Neuer Bot Dialog ───────────────────────────────────── -->
 <dialog id="new-bot-dialog">
   <h3>+ Neuer Bot</h3>
@@ -961,10 +1087,17 @@
 </dialog>
 
 <script>
-  // Countdown (60s full-page reload via <meta refresh>)
+  // Countdown (60s full-page reload, pausiert wenn ein Dialog offen ist)
   let s = 60;
   const el = document.getElementById('cd');
-  setInterval(() => { s--; if (s >= 0 && el) el.textContent = s; }, 1000);
+  setInterval(() => {
+    const anyOpen = [...document.querySelectorAll('dialog')].some(d => d.open);
+    if (!anyOpen) {
+      s--;
+      if (s <= 0) { location.reload(); return; }
+    }
+    if (el) el.textContent = s;
+  }, 1000);
 
   // Collapse/Expand
   function toggle(header) {
@@ -1128,6 +1261,170 @@
       }
     });
   }
+
+  // ── Holdings ──────────────────────────────────────────────────────
+  const holdingClicks = {};   // coin → Anzahl Klicks (0 = Zielkurs = aktueller Kurs)
+  let holdingsData = [];
+
+  function _fmtPrice(p) {
+    if (p >= 100)  return p.toFixed(2);
+    if (p >= 1)    return p.toFixed(4);
+    if (p >= 0.01) return p.toFixed(6);
+    return p.toFixed(8);
+  }
+
+  function renderHoldings() {
+    const tbody = document.getElementById('holdings-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    holdingsData.forEach(h => {
+      const n      = holdingClicks[h.coin] ?? 0;
+      const step   = h.amount > 0 ? 0.25 / h.amount : 0;   // Preisschritt pro Klick → +0,25 € Gewinn
+      const target = h.price + n * step;
+      const profit = n * 0.25;                              // = (target - price) * amount
+      const profitColor = profit > 0.001 ? '#3fb950' : profit < -0.001 ? '#f85149' : '#8b949e';
+      const profitStr   = (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' €';
+
+      const sellCell = `<button class="sltp-adj" style="background:#238636;border-color:#2ea043;padding:3px 10px" onclick="holdingSell('${h.symbol}', this, ${h.bot_running})">Verkaufen</button>`;
+
+      tbody.insertAdjacentHTML('beforeend', `
+        <tr>
+          <td><strong>${h.coin}</strong></td>
+          <td style="font-variant-numeric:tabular-nums">${h.amount < 1 ? h.amount.toPrecision(5) : h.amount.toFixed(4)}</td>
+          <td>${h.value_eur.toFixed(2)} €</td>
+          <td style="font-variant-numeric:tabular-nums">${_fmtPrice(h.price)}</td>
+          <td>
+            <div class="sltp-ctrl" style="gap:6px">
+              <button class="sltp-adj" onclick="holdingAdj('${h.coin}', -1)">−</button>
+              <span style="min-width:8rem;text-align:center;font-variant-numeric:tabular-nums">${_fmtPrice(target)}</span>
+              <button class="sltp-adj" onclick="holdingAdj('${h.coin}', +1)">+</button>
+            </div>
+          </td>
+          <td style="color:${profitColor};font-variant-numeric:tabular-nums">${profitStr}</td>
+          <td>${sellCell}</td>
+        </tr>`);
+    });
+  }
+
+  async function updateHoldings() {
+    try {
+      const res = await fetch('/api/holdings');
+      if (!res.ok) return;
+      const fresh = await res.json();
+      // Kurs-Updates einarbeiten, aber Klick-Zustand pro Coin beibehalten
+      holdingsData = fresh;
+      renderHoldings();
+      document.getElementById('holdings-loading').style.display = 'none';
+      const tbl = document.getElementById('holdings-table');
+      if (tbl) tbl.style.display = holdingsData.length ? '' : 'none';
+    } catch(e) {}
+  }
+
+  function holdingAdj(coin, dir) {
+    holdingClicks[coin] = (holdingClicks[coin] ?? 0) + dir;
+    renderHoldings();
+  }
+
+  // ── Parameter-Dialog ──────────────────────────────────────
+  function openParamsDialog(event, btn) {
+    event.stopPropagation();
+    const cfg = JSON.parse(btn.getAttribute('data-edit-cfg') || '{}');
+    document.getElementById('pd-symbol').value      = cfg.symbol || '';
+    document.getElementById('pd-title').textContent = cfg.symbol || '';
+    document.getElementById('pd-fast').value        = cfg.fast_period ?? 9;
+    document.getElementById('pd-slow').value        = cfg.slow_period ?? 21;
+    document.getElementById('pd-sl').value          = cfg.sl_pct ?? 3;
+    document.getElementById('pd-tp').value          = cfg.tp_pct ?? 6;
+    document.getElementById('pd-rsi-buy').value     = cfg.rsi_buy_max ?? 65;
+    document.getElementById('pd-rsi-sell').value    = cfg.rsi_sell_min ?? 35;
+    document.getElementById('pd-buf').value         = cfg.safety_buffer ?? 10;
+    document.getElementById('pd-trail-on').checked  = !!cfg.trailing_sl;
+    document.getElementById('pd-trail-pct').value   = cfg.trailing_sl_pct ?? 2;
+    document.getElementById('pd-be-on').checked     = !!cfg.breakeven_enabled;
+    document.getElementById('pd-be-pct').value      = cfg.breakeven_pct ?? 1;
+    document.getElementById('pd-vol-on').checked    = !!cfg.volume_filter;
+    document.getElementById('pd-vol-fac').value     = cfg.volume_factor ?? 1.2;
+    document.getElementById('pd-ptp-on').checked    = !!cfg.partial_tp;
+    document.getElementById('pd-ptp-pct').value     = cfg.partial_tp_fraction ?? 50;
+    const btn2 = document.getElementById('pd-save-btn');
+    btn2.textContent = 'Übernehmen';
+    btn2.disabled = false;
+    document.getElementById('params-dialog').showModal();
+  }
+
+  async function saveParams() {
+    const symbol = document.getElementById('pd-symbol').value;
+    const btn    = document.getElementById('pd-save-btn');
+    btn.disabled = true;
+    btn.textContent = '…';
+    const payload = {
+      symbol,
+      fast_period:         parseInt(document.getElementById('pd-fast').value),
+      slow_period:         parseInt(document.getElementById('pd-slow').value),
+      sl_pct:              parseFloat(document.getElementById('pd-sl').value),
+      tp_pct:              parseFloat(document.getElementById('pd-tp').value),
+      rsi_buy_max:         parseFloat(document.getElementById('pd-rsi-buy').value),
+      rsi_sell_min:        parseFloat(document.getElementById('pd-rsi-sell').value),
+      safety_buffer:       parseFloat(document.getElementById('pd-buf').value),
+      trailing_sl:         document.getElementById('pd-trail-on').checked,
+      trailing_sl_pct:     parseFloat(document.getElementById('pd-trail-pct').value),
+      breakeven_enabled:   document.getElementById('pd-be-on').checked,
+      breakeven_pct:       parseFloat(document.getElementById('pd-be-pct').value),
+      volume_filter:       document.getElementById('pd-vol-on').checked,
+      volume_factor:       parseFloat(document.getElementById('pd-vol-fac').value),
+      partial_tp:          document.getElementById('pd-ptp-on').checked,
+      partial_tp_fraction: parseFloat(document.getElementById('pd-ptp-pct').value),
+    };
+    try {
+      const r = await fetch('/api/bot/set_runtime_params', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      }).then(res => res.json());
+      if (r.ok) {
+        btn.textContent = '✓ Gespeichert';
+        setTimeout(() => document.getElementById('params-dialog').close(), 1200);
+      } else {
+        btn.textContent = '❌ ' + (r.error || 'Fehler');
+        btn.disabled = false;
+      }
+    } catch(e) {
+      btn.textContent = '❌ Fehler';
+      btn.disabled = false;
+    }
+  }
+
+  async function holdingSell(symbol, btn, botRunning) {
+    const msg = botRunning
+      ? `Force-SELL für ${symbol} senden? Der Bot verkauft beim nächsten Loop (~60s).`
+      : `${symbol} SOFORT verkaufen? Diese Order geht direkt an Kraken (kein Bot nötig).`;
+    if (!confirm(msg)) return;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      let r;
+      if (botRunning) {
+        r = await fetch('/api/bot/force_signal', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({symbol, signal: 'SELL'})
+        }).then(res => res.json());
+      } else {
+        r = await fetch('/api/direct_sell', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({symbol})
+        }).then(res => res.json());
+      }
+      btn.textContent = r.ok ? '✓ verkauft' : '❌ ' + (r.error || 'Fehler');
+    } catch(e) {
+      btn.textContent = '❌ Fehler';
+    }
+    setTimeout(() => { btn.textContent = 'Verkaufen'; btn.disabled = false; }, 4000);
+  }
+
+  updateHoldings();
+  setInterval(updateHoldings, 60000);   // jede Minute Kurse aktualisieren
 
   // ── Balance im Hintergrund alle 5 Minuten aktualisieren ─────────────
   async function updateBalance() {

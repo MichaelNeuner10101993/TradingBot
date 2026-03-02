@@ -292,6 +292,10 @@ class StateDB:
         )
         self.conn.commit()
 
+    def del_state(self, key: str):
+        self.conn.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+        self.conn.commit()
+
     def get_state(self, key: str, default: str = "") -> str:
         cur = self.conn.execute("SELECT value FROM bot_state WHERE key = ?", (key,))
         row = cur.fetchone()

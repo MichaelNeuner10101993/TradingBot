@@ -28,7 +28,7 @@ def _fmt(price: float) -> str:
     return f"{price:.8f}"
 
 
-def _send_sync(text: str) -> bool:
+def _send_sync(text: str, reply_markup=None) -> bool:
     """Sendet eine Telegram-Nachricht synchron. Gibt True bei Erfolg zurück."""
     token, chat_id = _creds()
     if not token or not chat_id:
@@ -40,7 +40,8 @@ def _send_sync(text: str) -> bool:
         async def _do():
             async with Bot(token) as bot:
                 await asyncio.wait_for(
-                    bot.send_message(chat_id, text, parse_mode="HTML"),
+                    bot.send_message(chat_id, text, parse_mode="HTML",
+                                     reply_markup=reply_markup),
                     timeout=5.0,
                 )
         asyncio.run(_do())
@@ -131,24 +132,26 @@ def send_supervisor_recommendation(
     cur_vol: bool,
 ):
     """Telegram-Empfehlung wenn Supervisor eine bessere Feature-Kombination gefunden hat."""
+    import json
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
     trailing_rec = "✅" if best.get("use_trailing_sl") else "❌"
     vol_rec      = "✅" if best.get("volume_filter")   else "❌"
     trailing_cur = "✅" if cur_trailing                else "❌"
     vol_cur      = "✅" if cur_vol                     else "❌"
-
-    hints = []
-    if best.get("use_trailing_sl") and not cur_trailing:
-        hints.append("--trailing-sl")
-    if best.get("volume_filter") and not cur_vol:
-        hints.append("--volume-filter")
-    hint_line = f"\n→ Neustart mit: <code>{' '.join(hints)}</code>" if hints else ""
 
     text = (
         f"🔬 <b>Supervisor-Empfehlung: {symbol}</b>\n"
         f"Strategie: {best['name']} {best['fast']}/{best['slow']}  "
         f"Sim-P&L: {best['pnl_pct']:+.2f}% ({best['num_trades']} Trades)\n"
         f"Trailing SL: {trailing_rec} empfohlen  (aktuell: {trailing_cur})\n"
-        f"Volumen-Filter: {vol_rec} empfohlen  (aktuell: {vol_cur})"
-        f"{hint_line}"
+        f"Volumen-Filter: {vol_rec} empfohlen  (aktuell: {vol_cur})\n"
+        f"→ Tippe <i>übernehmen</i> oder nutze den Button:"
     )
-    _send_sync(text)
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "✅ Empfehlung übernehmen",
+            callback_data=json.dumps({"action": "apply_supervisor", "symbol": symbol}),
+        )
+    ]])
+    _send_sync(text, reply_markup=markup)

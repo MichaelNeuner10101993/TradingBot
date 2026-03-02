@@ -92,6 +92,7 @@ nano .env
 | `KRAKEN_API_SECRET` | ✅ | Kraken API Secret |
 | `TELEGRAM_BOT_TOKEN` | News-Agent | Token von @BotFather |
 | `TELEGRAM_CHAT_ID` | News-Agent | Eigene Telegram User-ID |
+| `ANTHROPIC_API_KEY` | empfohlen | Für KI-Freitext im Telegram-Bot (console.anthropic.com) |
 | `CRYPTOPANIC_API_KEY` | optional | Kostenlos auf cryptopanic.com |
 | `TWITTER_BEARER_TOKEN` | optional | Twitter/X Basic API (~$100/Monat) |
 
@@ -540,10 +541,27 @@ botvenv/bin/python web/app.py
 ```
 
 - Zeigt alle Bot-Instanzen automatisch (liest alle `db/*.db`)
-- **Auto-Refresh**: 60s (Seite), 5s (Cards live via `/api/bots`)
+- **Auto-Refresh**: 60s (Seite via JS, pausiert automatisch wenn ein Dialog offen ist), 5s (Cards live via `/api/bots`)
 - **Regime-Badge** pro Bot: TREND / SIDEWAYS / VOLATILE mit Farbe
 - **SL/TP editierbar**: ± Buttons mit adaptiver Schrittweite (~1.50€ P&L pro Klick)
 - **P&L-Anzeige**: Netto nach Kraken-Gebühren (0.26% pro Order)
+
+### Parameter zur Laufzeit ändern (⚙-Button)
+
+Jede Bot-Card hat einen **⚙**-Button der einen Dialog mit allen änderbaren Parametern öffnet.
+Änderungen werden beim **nächsten Bot-Loop (~60s)** übernommen – **kein Neustart nötig**.
+Gleichzeitig wird `bot.conf.d/SYMBOL.conf` aktualisiert → Werte bleiben nach Neustart erhalten.
+
+| Parameter | Beschreibung |
+|-----------|--------------|
+| Fast MA / Slow MA | SMA-Perioden für Signal-Generierung |
+| Stop-Loss % / Take-Profit % | Fallback SL/TP für neue Trades |
+| RSI Kauf-Max / RSI Verkauf-Min | Filter-Grenzen für Signal-Qualität |
+| Safety Buffer % | Kapital-Reserve die nie investiert wird |
+| Trailing SL | Ein/Aus + Abstand % |
+| Breakeven SL | Ein/Aus + Trigger % |
+| Volumen-Filter | Ein/Aus + Faktor |
+| Partial Take-Profit | Ein/Aus + Anteil % |
 
 ### Bot hinzufügen
 
@@ -574,6 +592,12 @@ Im Dialog **+ Bot hinzufügen** gibt es zwei Bereiche:
 | HTF Slow SMA | 21 | Periode für HTF-Trend-Beurteilung |
 
 Beim **▶ Starten** (Wiederstart eines gestoppten Bots aus der Card) werden alle gespeicherten Feature-Flags automatisch wiederhergestellt.
+
+### Direktverkauf ohne laufenden Bot
+
+In der **Bestände-Tabelle** ist der **Verkaufen**-Button immer aktiv:
+- **Bot läuft**: Force-SELL → Bot verkauft beim nächsten Loop (~60s)
+- **Bot gestoppt / kein Bot**: Sofortiger Direktverkauf über Kraken (`POST /api/direct_sell`) – kein Bot nötig. Offene Trades in der DB werden automatisch geschlossen.
 
 ---
 
@@ -740,6 +764,32 @@ Bestätigung zeigt alle aktiven Features:
 Features: Trailing 1.5% · Breakeven 1.0% · HTF 1h
 ```
 
+### KI-Freitext (Claude Haiku)
+
+Wenn `ANTHROPIC_API_KEY` gesetzt ist, versteht der Bot **beliebigen Freitext** auf Deutsch und Englisch –
+auch mit Tippfehlern, anderen Wortstellungen oder komplexen Kombinationen:
+
+```
+"kannst du bei eth den fast ma auf 7 setzen und volume filter an?"
+"stopp mal den ada bot kurz"
+"wie viel ist mein portfolio gerade wert?"
+"setze bei bitcoin den stop loss auf 2.5 prozent"
+"übernimm die supervisor empfehlung für btc"
+```
+
+**Ohne `ANTHROPIC_API_KEY`** funktioniert nur ein eingeschränkter Regex-basierter Parser:
+
+| Freitext-Beispiel (Regex) | Aktion |
+|--------------------------|--------|
+| `status` · `portfolio` · `rendite` · `holdings` | Übersicht |
+| `stoppe BTC` · `starte ETH` | Bot stop/start |
+| `kauf BTC` · `verkauf ETH` | Force-Signal |
+| `sl BTC 2` · `tp BTC 4` | SL/TP setzen |
+| `fast BTC 7` · `slow ETH 21` | MA-Perioden |
+| `volumen BTC 1.5` · `partial BTC 50` | Filter-Parameter |
+| `empfehlung BTC übernehmen` | Supervisor-Empfehlung |
+| `BTC fast=7 slow=18 trailing=2` | Multi-Param (key=value) |
+
 Alle Befehle funktionieren auch als **Freitext** ohne `/`:
 `status` · `portfolio` · `rendite` · `holdings` · `stoppe BTC` · `starte ETH` · `kauf BTC` · `sl BTC 2`
 
@@ -773,6 +823,24 @@ sudo wg show       # Verbindungsstatus
 ```
 
 Nach VPN-Verbindung: `http://<pi-vpn-ip>:5001` im Browser.
+
+### WireGuard-Port über install.sh setzen
+
+`install.sh` kann den WireGuard-Port direkt in `/etc/wireguard/wg0.conf` setzen und `wg-quick@wg0` neu starten:
+
+**Interaktiv** (wird beim Ausführen nachgefragt):
+```bash
+bash systemd/install.sh
+# → WireGuard-Port setzen? [Enter = überspringen, sonst Port eingeben]: 51820
+```
+
+**Als Argument** (nicht-interaktiv / für Scripts):
+```bash
+bash systemd/install.sh --wg-port=51820
+```
+
+Wird kein Port angegeben (Enter), bleibt die bestehende WireGuard-Konfiguration unverändert.
+Anschließend Router-Port-Forwarding auf den neuen Port anpassen.
 
 ---
 

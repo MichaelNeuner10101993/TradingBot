@@ -166,6 +166,35 @@ def main():
 
                 # 2) Supervisor-Anpassungen einlesen (falls Supervisor läuft)
                 _sv = db.get_all_state()
+
+                # 2a) Laufzeit-Overrides aus Telegram/API (pending_* Schlüssel, einmalig)
+                for _ok, _obj, _attr, _cast in [
+                    ("pending_breakeven_enabled",   risk_cfg, "breakeven_enabled",     lambda v: v.lower() == "true"),
+                    ("pending_breakeven_pct",       risk_cfg, "breakeven_trigger_pct", float),
+                    ("pending_trailing_sl",         risk_cfg, "use_trailing_sl",       lambda v: v.lower() == "true"),
+                    ("pending_trailing_sl_pct",     risk_cfg, "trailing_sl_pct",       float),
+                    ("pending_sl_pct",              risk_cfg, "stop_loss_pct",         float),
+                    ("pending_tp_pct",              risk_cfg, "take_profit_pct",       float),
+                    ("pending_safety_buffer",       risk_cfg, "safety_buffer_pct",     float),
+                    ("pending_rsi_buy_max",         risk_cfg, "rsi_buy_max",           float),
+                    ("pending_rsi_sell_min",        risk_cfg, "rsi_sell_min",          float),
+                    ("pending_volume_filter",       risk_cfg, "volume_filter",         lambda v: v.lower() == "true"),
+                    ("pending_volume_factor",       risk_cfg, "volume_factor",         float),
+                    ("pending_partial_tp",          risk_cfg, "partial_tp_enabled",    lambda v: v.lower() == "true"),
+                    ("pending_partial_tp_fraction", risk_cfg, "partial_tp_fraction",   float),
+                    ("pending_fast_period",         bot_cfg,  "fast_period",           int),
+                    ("pending_slow_period",         bot_cfg,  "slow_period",           int),
+                ]:
+                    _v = _sv.get(_ok, "")
+                    if _v:
+                        try:
+                            setattr(_obj, _attr, _cast(_v))
+                            db.del_state(_ok)
+                            log.info(f"Laufzeit-Override: {_attr} = {getattr(_obj, _attr)}")
+                        except (ValueError, TypeError) as _e:
+                            log.warning(f"Override {_ok} ungültig: {_e}")
+                            db.del_state(_ok)
+
                 if _sv.get("supervisor_regime"):
                     try:
                         risk_cfg.rsi_buy_max  = float(_sv.get("supervisor_rsi_buy_max",  risk_cfg.rsi_buy_max))
@@ -394,6 +423,7 @@ def main():
                 db.set_state("breakeven_trigger_pct",  str(risk_cfg.breakeven_trigger_pct))
                 db.set_state("partial_tp_enabled",     str(risk_cfg.partial_tp_enabled))
                 db.set_state("partial_tp_fraction",    str(risk_cfg.partial_tp_fraction))
+                db.set_state("safety_buffer_pct",      str(risk_cfg.safety_buffer_pct))
                 db.set_state("htf_timeframe",          bot_cfg.htf_timeframe)
                 db.set_state("htf_fast",               str(bot_cfg.htf_fast))
                 db.set_state("htf_slow",               str(bot_cfg.htf_slow))
