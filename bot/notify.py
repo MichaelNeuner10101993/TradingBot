@@ -155,3 +155,27 @@ def send_supervisor_recommendation(
         )
     ]])
     _send_sync(text, reply_markup=markup)
+
+
+def send_strategy_learned(
+    symbol: str,
+    best: dict,
+    regime: str,
+    prev_regime: str,
+    sqn_delta: float,
+):
+    """Proaktive Nachricht wenn Supervisor eine deutlich bessere Strategie findet."""
+    regime_changed = bool(prev_regime) and prev_regime != regime
+    icon      = "🆕" if regime_changed else "📈"
+    regime_str = f"{prev_regime} → {regime}" if regime_changed else regime
+    val_str    = f"  val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
+    rsi_str    = f"RSI≤{best['rsi_buy_max']:.0f}/{best['rsi_sell_min']:.0f}" if "rsi_buy_max" in best else ""
+    text = (
+        f"{icon} <b>Gelernte Strategie: {symbol}</b>\n"
+        f"Regime: {regime_str}\n"
+        f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>  "
+        f"{'⬆SL' if best.get('use_trailing_sl') else ''}{'📊Vol' if best.get('volume_filter') else ''}\n"
+        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
+        f"Δ SQN: {sqn_delta:+.2f}  {rsi_str}"
+    )
+    _send_sync(text)

@@ -168,6 +168,14 @@ def _write(
 
     try:
         db = StateDB(db_path)
+        # Vorherige Werte für Vergleich lesen (vor dem Überschreiben)
+        prev_regime = db.get_state("supervisor_regime", "")
+        prev_sqn    = float(db.get_state("supervisor_sqn", "0") or 0)
+        symbol      = db.get_state("symbol", os.path.basename(db_path))
+
+        curr_sqn  = best.get("sqn", 0.0)
+        sqn_delta = curr_sqn - prev_sqn
+
         db.set_state("supervisor_regime",          regime)
         db.set_state("supervisor_adx",             f"{adx_val:.1f}" if adx_val >= 0 else "–")
         db.set_state("supervisor_atr_pct",         f"{atr_pct:.2f}")
@@ -180,6 +188,7 @@ def _write(
         db.set_state("supervisor_slow",            str(best["slow"]))
         db.set_state("supervisor_sim_pnl",         f"{best['pnl_pct']:+.2f}")
         db.set_state("supervisor_sim_trades",      str(best["num_trades"]))
+        db.set_state("supervisor_sqn",             f"{curr_sqn:.3f}")
         db.set_state("supervisor_last_update",     utcnow())
         if best.get("val_pnl") is not None:
             db.set_state("supervisor_val_pnl",     f"{best['val_pnl']:+.2f}")
@@ -197,14 +206,24 @@ def _write(
             source="own",
             use_trailing_sl=best.get("use_trailing_sl", False),
             volume_filter=best.get("volume_filter", False),
+            sqn=curr_sqn,
+            val_pnl=best.get("val_pnl"),
         )
 
         # Telegram-Empfehlung wenn Supervisor-Empfehlung ≠ aktuelle Bot-Einstellung
         cur_trailing = db.get_state("use_trailing_sl", "False").lower() == "true"
         cur_vol      = db.get_state("volume_filter",   "False").lower() == "true"
         if best.get("use_trailing_sl", False) != cur_trailing or best.get("volume_filter", False) != cur_vol:
-            symbol = db.get_state("symbol", os.path.basename(db_path))
             notify.send_supervisor_recommendation(symbol, best, cur_trailing, cur_vol)
+
+        # Proaktive Strategie-Update-Nachricht (Regime-Wechsel ODER SQN-Sprung ≥ 0.5)
+        regime_changed = bool(prev_regime) and prev_regime != regime
+        if regime_changed or sqn_delta >= 0.5:
+            log.info(
+                f"Strategie-Update {symbol}: regime_changed={regime_changed} "
+                f"sqn_delta={sqn_delta:+.2f} → sende Telegram-Nachricht"
+            )
+            notify.send_strategy_learned(symbol, best, regime, prev_regime, sqn_delta)
 
         db.close()
     except Exception as e:

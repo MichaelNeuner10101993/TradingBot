@@ -1015,12 +1015,19 @@ class TelegramNewsBot:
                 strat_str  = ", ".join(f"{n} ({c}×)" for n, c in top_strats)
                 avg_pnl    = sum(pnl_vals) / len(pnl_vals) if pnl_vals else 0.0
 
+                sqn_vals = [r["sqn"] for r in rows if r.get("sqn")]
+                avg_sqn  = sum(sqn_vals) / len(sqn_vals) if sqn_vals else 0.0
+                val_vals = [r["val_pnl"] for r in rows if r.get("val_pnl") is not None]
+                avg_val  = sum(val_vals) / len(val_vals) if val_vals else None
+
                 lines = [
                     f"🧠 <b>Supervisor-Erfahrung: {symbol_arg}</b>\n",
                     f"📋 Letzte {total} Einträge (max. 20)\n",
                     f"📊 Regime-Verteilung: {regime_str}",
                     f"🎯 Top-Strategien: {strat_str}",
-                    f"📈 Ø Sim-P&amp;L: {avg_pnl:+.2f}%",
+                    f"📈 Ø Sim-P&amp;L: {avg_pnl:+.2f}%"
+                    + (f"  Ø val: {avg_val:+.2f}%" if avg_val is not None else "")
+                    + (f"  Ø SQN: {avg_sqn:.2f}" if avg_sqn else ""),
                 ]
 
                 if cross_events:
@@ -1036,10 +1043,12 @@ class TelegramNewsBot:
                     ts = r["timestamp"][:16].replace("T", " ") if r["timestamp"] else "?"
                     src = f" ← {r['source']}" if r["source"] and r["source"] != "own" else ""
                     adx_str = f" ADX={r['adx']:.0f}" if r["adx"] and r["adx"] >= 0 else ""
+                    sqn_str = f" SQN={r['sqn']:.2f}" if r.get("sqn") else ""
+                    val_str = f" val={r['val_pnl']:+.2f}%" if r.get("val_pnl") is not None else ""
                     lines.append(
                         f"  {ts} | {r['regime']}{adx_str} | "
                         f"{r['strategy_name']} {r['fast']}/{r['slow']} | "
-                        f"{r['sim_pnl']:+.2f}%{src}"
+                        f"{r['sim_pnl']:+.2f}%{val_str}{sqn_str}{src}"
                     )
 
                 await update.message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -1069,12 +1078,14 @@ class TelegramNewsBot:
 
                         sym = sym_row[0] if sym_row else os.path.basename(db_path).replace(".db", "").replace("_", "/", 1)
                         if row:
-                            ts  = row["timestamp"][:16].replace("T", " ") if row["timestamp"] else "?"
-                            src = f" ← {row['source']}" if row["source"] and row["source"] != "own" else ""
+                            ts      = row["timestamp"][:16].replace("T", " ") if row["timestamp"] else "?"
+                            src     = f" ← {row['source']}" if row["source"] and row["source"] != "own" else ""
+                            sqn_str = f"  SQN={row['sqn']:.2f}" if row.get("sqn") else ""
+                            val_str = f"  val={row['val_pnl']:+.2f}%" if row.get("val_pnl") is not None else ""
                             lines.append(
                                 f"🔹 <b>{sym}</b> ({count} Einträge)\n"
                                 f"   Letztes Regime: {row['regime']} | {row['strategy_name']} {row['fast']}/{row['slow']}\n"
-                                f"   Sim-P&amp;L: {row['sim_pnl']:+.2f}% | {ts}{src}\n"
+                                f"   Sim-P&amp;L: {row['sim_pnl']:+.2f}%{val_str}{sqn_str} | {ts}{src}\n"
                             )
                         else:
                             lines.append(f"🔹 <b>{sym}</b> – noch keine Supervisor-Daten\n")
