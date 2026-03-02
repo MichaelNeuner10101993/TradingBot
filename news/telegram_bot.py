@@ -299,6 +299,7 @@ class TelegramNewsBot:
         self._app.add_handler(CommandHandler("set_alert_interval", self._cmd_set_alert_interval))
         self._app.add_handler(CommandHandler("erklaerung",         self._cmd_erklaerung))
         self._app.add_handler(CommandHandler("set_params",         self._cmd_set_params))
+        self._app.add_handler(CommandHandler("tipps",              self._cmd_tipps))
 
         # Inline-Button-Callbacks
         self._app.add_handler(CallbackQueryHandler(self._callback_handler))
@@ -335,6 +336,7 @@ class TelegramNewsBot:
             ("set_alert_interval", "Alert-Interval setzen (z.B. /set_alert_interval 2h)"),
             ("erklaerung",         "Parameter erklärt (z.B. /erklaerung trailing)"),
             ("set_params",         "Mehrere Parameter setzen (z.B. /set_params BTC/EUR fast=7 slow=18 trailing=2)"),
+            ("tipps",              "KI-Analyse: Parameter-Optimierungstipps (optional: /tipps BTC/EUR)"),
             ("help",               "Alle Befehle anzeigen"),
         ]
         try:
@@ -1573,6 +1575,17 @@ class TelegramNewsBot:
                     await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
                 return
 
+        # Tipps / Parameter-Optimierung
+        m = re.search(r'\b(?:tipp(?:s)?|ratschlag|optimier|verbesser|parameter.?tipp|was soll ich ändern|wie anpassen)\b', text)
+        if m:
+            sym_m = re.search(r'\b([A-Za-z]{2,6})(?:/EUR)?\b', text.upper())
+            if sym_m:
+                context.args = [_normalize_symbol(sym_m.group(1))]
+            else:
+                context.args = []
+            await self._cmd_tipps(update, context)
+            return
+
         # LLM-Fallback: Claude Haiku als Freitext-Parser
         running = list(_get_running_symbols(self.cfg.web_api_base))
         parsed  = _llm_parse_command(text, running)
@@ -1635,6 +1648,10 @@ class TelegramNewsBot:
                 await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             else:
                 await update.message.reply_text(f"❌ {result.get('error')}", parse_mode="HTML")
+            return
+        elif action == "tipps":
+            context.args = [symbol] if symbol else []
+            await self._cmd_tipps(update, context)
             return
 
         await update.message.reply_text(
@@ -1966,6 +1983,107 @@ class TelegramNewsBot:
             await update.message.reply_text(
                 f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2
             )
+
+    # ------------------------------------------------------------------
+    # KI-Tipps zur Parameter-Optimierung
+    # ------------------------------------------------------------------
+
+    async def _cmd_tipps(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """KI-Analyse aller Bots – gibt konkrete Parameter-Optimierungstipps."""
+        if not self._is_authorized(update):
+            await self._unauthorized(update)
+            return
+        import os as _os
+        api_key = _os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            await update.message.reply_text("❌ ANTHROPIC_API_KEY nicht gesetzt.")
+            return
+        await update.message.reply_text("⏳ Analysiere Bot-Performance …", parse_mode="HTML")
+        try:
+            resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=10)
+            bots = resp.json()
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler beim Abrufen der Bot-Daten: {e}")
+            return
+
+        target_symbol = _normalize_symbol(context.args[0]) if context.args else None
+        if target_symbol:
+            bots = [b for b in bots if b.get("symbol") == target_symbol]
+            if not bots:
+                await update.message.reply_text(
+                    f"❌ Bot <b>{target_symbol}</b> nicht gefunden.", parse_mode="HTML"
+                )
+                return
+
+        summaries = []
+        for b in bots:
+            st     = b.get("state", {})
+            closed = b.get("closed_trades", [])
+            valid  = [t for t in closed if t.get("pnl_pct") is not None]
+            wins   = [t for t in valid if (t.get("pnl_pct") or 0) > 0]
+            summaries.append({
+                "symbol":         b.get("symbol"),
+                "status":         b.get("status"),
+                "regime":         b.get("regime") or "unbekannt",
+                "adx":            st.get("supervisor_adx"),
+                "strategy":       b.get("strategy_name"),
+                "fast_period":    st.get("fast_period"),
+                "slow_period":    st.get("slow_period"),
+                "sl_pct":         round(float(st.get("sl_pct", 0)) * 100, 2),
+                "tp_pct":         round(float(st.get("tp_pct", 0)) * 100, 2),
+                "trailing_sl":    st.get("trailing_sl"),
+                "trailing_sl_pct": st.get("trailing_sl_pct"),
+                "breakeven":      st.get("breakeven_enabled"),
+                "volume_filter":  st.get("volume_filter"),
+                "rsi_buy_max":    st.get("supervisor_rsi_buy_max") or st.get("rsi_buy_max"),
+                "rsi_sell_min":   st.get("supervisor_rsi_sell_min") or st.get("rsi_sell_min"),
+                "trades_gesamt":  len(valid),
+                "win_rate_pct":   round(len(wins) / len(valid) * 100, 1) if valid else None,
+                "avg_pnl_pct":    round(sum(t.get("pnl_pct", 0) for t in valid) / len(valid), 2) if valid else None,
+                "offene_position": bool(b.get("open_trades")),
+                "sim_pnl":        b.get("sim_pnl"),
+            })
+
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=api_key)
+            system = (
+                "Du bist ein erfahrener Krypto-Trading-Experte für SMA-Crossover-Bots auf Kraken (5-Minuten-Timeframe).\n"
+                "Analysiere die Bot-Daten und gib konkrete, umsetzbare Parameter-Optimierungstipps auf Deutsch.\n\n"
+                "Format: Pro Bot maximal 5–7 präzise Bullet-Points. Jeder Tipp mit konkretem Wert "
+                "(z.B. 'Fast MA von 9 → 7 senken' statt 'SMA anpassen').\n"
+                "Wenn zu wenige Trades für Aussagen vorhanden sind, sage das klar und gib nur allgemeine Hinweise.\n\n"
+                "Faustregeln:\n"
+                "• TREND + hoher ADX: größere SMA-Perioden (slow ≥21), Trailing SL sinnvoll\n"
+                "• RANGE: kleinere Perioden (fast 7–9), kein Trailing, eher Partial TP\n"
+                "• VOLATILE: größerer SL%, Breakeven früh setzen, Volume-Filter aktivieren\n"
+                "• Win-Rate <40%: SMA-Perioden erhöhen, RSI-Filter verschärfen\n"
+                "• Win-Rate >70%: TP erhöhen, SL etwas lockern\n"
+                "• Avg P&L negativ: Regime-Strategie überdenken, Volume-Filter prüfen\n"
+                "• Sim-P&L stark abweichend von echtem P&L: Parameter zu sensitiv"
+            )
+            user_msg = (
+                f"Bot-Daten:\n\n{json.dumps(summaries, indent=2, ensure_ascii=False)}\n\n"
+                "Bitte gib konkrete Tipps zur Parameter-Optimierung pro Bot."
+            )
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1500,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            advice = response.content[0].text.strip()
+            header = "💡 <b>Parameter-Optimierungstipps</b>\n\n"
+            full   = header + advice
+            if len(full) <= 4096:
+                await update.message.reply_text(full, parse_mode="HTML")
+            else:
+                await update.message.reply_text(header, parse_mode="HTML")
+                for chunk in [advice[i:i+4000] for i in range(0, len(advice), 4000)]:
+                    await update.message.reply_text(chunk, parse_mode="HTML")
+        except Exception as e:
+            logger.exception("_cmd_tipps KI-Fehler")
+            await update.message.reply_text(f"❌ KI-Analyse fehlgeschlagen: {e}")
 
     # ------------------------------------------------------------------
     # Mehrfach-Parameter setzen
@@ -2503,6 +2621,7 @@ def _llm_parse_command(text: str, running_symbols: list[str]) -> dict:
             "- set_tp: Take-Profit in % setzen (benötigt symbol, value als Zahl z.B. 5.0)\n"
             "- set_params: Einen oder mehrere Parameter setzen (benötigt symbol + params-Objekt)\n"
             "- apply_supervisor: Supervisor-Empfehlung übernehmen (benötigt symbol)\n"
+            "- tipps: KI-Tipps zur Parameter-Optimierung (optionales symbol)\n"
             "- unknown: Wenn keine sinnvolle Aktion erkennbar\n\n"
             f"Aktuell laufende Bots: {', '.join(running_symbols) if running_symbols else 'keine'}\n\n"
             "Symbol-Normalisierung: IMMER als 'BTC/EUR' Format.\n"
