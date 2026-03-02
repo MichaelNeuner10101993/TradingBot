@@ -389,10 +389,20 @@ class TelegramNewsBot:
         else:
             age_str = item.published_at.strftime("%d.%m.%Y")
 
+        # Inline-Buttons – abhängig von laufenden Bots und Signal-Richtung
+        running = _get_running_symbols(self.cfg.web_api_base)
+
         if label == "bearish":
-            recommendation = "⚠️ Empfehlung: Bot\\(s\\) pausieren bis Lage klarer"
+            relevant_running = [s for s in coins if s in running] if coins else list(running)
+            if relevant_running:
+                recommendation = "⚠️ Empfehlung: Bot\\(s\\) pausieren bis Lage klarer"
+            else:
+                recommendation = "ℹ️ Betroffene Bot\\(s\\) bereits gestoppt"
         elif label == "bullish":
-            recommendation = "💡 Empfehlung: Starkes positives Signal – Bots laufen lassen"
+            if coins and all(s in running for s in coins):
+                recommendation = "✅ Starkes positives Signal – Bots laufen bereits"
+            else:
+                recommendation = "💡 Empfehlung: Starkes positives Signal – Bots laufen lassen"
         else:
             recommendation = "ℹ️ Neutrales Signal"
 
@@ -403,9 +413,6 @@ class TelegramNewsBot:
             f"{recommendation}\n"
             f"{'─' * 20}"
         )
-
-        # Inline-Buttons – abhängig von laufenden Bots und Signal-Richtung
-        running = _get_running_symbols(self.cfg.web_api_base)
         buttons = []
 
         if label == "bearish":
@@ -495,18 +502,25 @@ class TelegramNewsBot:
             for a in neutral[:2]:
                 lines.append(f"  `{a['score']:+.2f}` · _{_esc(a['item'].title[:120])}_")
 
+        running = _get_running_symbols(self.cfg.web_api_base)
+        coin_running = coin in running
+
         lines.append("")
         if label == "bearish":
-            lines.append("⚠️ Empfehlung: Bot\\(s\\) pausieren bis Lage klarer")
+            if coin_running:
+                lines.append("⚠️ Empfehlung: Bot\\(s\\) pausieren bis Lage klarer")
+            else:
+                lines.append("ℹ️ Bot bereits gestoppt")
         elif label == "bullish":
-            lines.append("💡 Empfehlung: Starkes positives Signal – Bots laufen lassen")
+            if coin_running:
+                lines.append("✅ Starkes positives Signal – Bot läuft bereits")
+            else:
+                lines.append("💡 Empfehlung: Starkes positives Signal – Bots laufen lassen")
         else:
             lines.append("⚖️ Empfehlung: Widersprüchliche Signale – Abwarten")
         lines.append(f"{'─' * 20}")
 
         text = "\n".join(lines)
-
-        running = _get_running_symbols(self.cfg.web_api_base)
         buttons = []
         event_ids = [a["event_id"] for a in articles]
 
@@ -1872,12 +1886,33 @@ class TelegramNewsBot:
         except ValueError as e:
             await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
             return
+        # Offene Trades vorher holen → absolute SL-Preise berechnen
+        trade_lines = []
+        try:
+            resp0 = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            for b in resp0.json():
+                if b.get("symbol") == symbol:
+                    cur_price = float(b.get("last_price") or 0)
+                    for t in b.get("open_trades", []):
+                        entry = float(t.get("entry_price") or 0)
+                        if entry:
+                            sl_abs = entry * (1 - pct / 100)
+                            dist = (cur_price - sl_abs) / cur_price * 100 if cur_price > 0 else 0
+                            trade_lines.append((entry, sl_abs, dist, cur_price))
+                    break
+        except Exception:
+            pass
+
         result = _call_set_sltp_pct(self.cfg.web_api_base, symbol, sl_pct=pct)
         if result["ok"]:
-            await update.message.reply_text(
-                f"✅ *{_esc(symbol)}* SL auf `{pct}%` unter Entry gesetzt\\.",
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
+            lines = [f"✅ *{_esc(symbol)}* SL auf `{_esc(str(pct))}%` unter Entry gesetzt\\."]
+            for entry, sl_abs, dist, cur_price in trade_lines:
+                lines.append(
+                    f"📍 Entry `{_esc(_fmt_p(entry))}` → SL `{_esc(_fmt_p(sl_abs))}`"
+                    + (f" \\(Kursabstand: {_esc(f'{dist:.1f}')}%\\)" if cur_price > 0 else "")
+                )
+            lines.append("_Wirkt beim nächsten Loop \\(\\~60s\\)\\._")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         else:
             await update.message.reply_text(
                 f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
@@ -1902,12 +1937,33 @@ class TelegramNewsBot:
         except ValueError as e:
             await update.message.reply_text(f"❌ Ungültiger Wert: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
             return
+        # Offene Trades vorher holen → absolute TP-Preise berechnen
+        trade_lines = []
+        try:
+            resp0 = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            for b in resp0.json():
+                if b.get("symbol") == symbol:
+                    cur_price = float(b.get("last_price") or 0)
+                    for t in b.get("open_trades", []):
+                        entry = float(t.get("entry_price") or 0)
+                        if entry:
+                            tp_abs = entry * (1 + pct / 100)
+                            dist = (tp_abs - cur_price) / cur_price * 100 if cur_price > 0 else 0
+                            trade_lines.append((entry, tp_abs, dist, cur_price))
+                    break
+        except Exception:
+            pass
+
         result = _call_set_sltp_pct(self.cfg.web_api_base, symbol, tp_pct=pct)
         if result["ok"]:
-            await update.message.reply_text(
-                f"✅ *{_esc(symbol)}* TP auf `{pct}%` über Entry gesetzt\\.",
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
+            lines = [f"✅ *{_esc(symbol)}* TP auf `{_esc(str(pct))}%` über Entry gesetzt\\."]
+            for entry, tp_abs, dist, cur_price in trade_lines:
+                lines.append(
+                    f"🎯 Entry `{_esc(_fmt_p(entry))}` → TP `{_esc(_fmt_p(tp_abs))}`"
+                    + (f" \\(noch {_esc(f'{dist:.1f}')}% bis TP\\)" if cur_price > 0 else "")
+                )
+            lines.append("_Wirkt beim nächsten Loop \\(\\~60s\\)\\._")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         else:
             await update.message.reply_text(
                 f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
@@ -1929,11 +1985,27 @@ class TelegramNewsBot:
             return
         symbol = _normalize_symbol(context.args[0])
         raw    = context.args[1].lower()
+
+        # Vorherigen Zustand abrufen für die Bestätigung
+        was_enabled, was_pct_str = False, "–"
+        try:
+            resp0 = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            for b in resp0.json():
+                if b.get("symbol") == symbol:
+                    st = b.get("state", {})
+                    was_enabled = st.get("breakeven_enabled", "False") == "True"
+                    was_pct_raw = float(st.get("breakeven_trigger_pct", "0.01") or "0.01")
+                    was_pct_str = f"{was_pct_raw * 100:.1f}%"
+                    break
+        except Exception:
+            pass
+
         if raw in ("off", "aus", "deaktivieren", "false", "0", "no", "nein"):
             result = _call_set_runtime_params(self.cfg.web_api_base, symbol, breakeven_enabled="false")
             if result["ok"]:
+                prev = f" \\(war: ✅ {_esc(was_pct_str)}\\)" if was_enabled else " \\(war: bereits aus\\)"
                 await update.message.reply_text(
-                    f"✅ *{_esc(symbol)}* Breakeven\\-SL deaktiviert\\.\n"
+                    f"✅ *{_esc(symbol)}* Breakeven\\-SL deaktiviert{prev}\\.\n"
                     f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
@@ -1952,8 +2024,13 @@ class TelegramNewsBot:
             breakeven_enabled="true", breakeven_pct=str(pct / 100),
         )
         if result["ok"]:
+            if was_enabled:
+                prev = f" \\(war: {_esc(was_pct_str)}\\)"
+            else:
+                prev = " \\(war: deaktiviert\\)"
             await update.message.reply_text(
-                f"✅ *{_esc(symbol)}* Breakeven\\-SL auf `{_esc(f'{pct}%')}` Trigger gesetzt\\.\n"
+                f"✅ *{_esc(symbol)}* Breakeven\\-SL auf `{_esc(f'{pct}%')}` Trigger gesetzt{prev}\\.\n"
+                f"_Sobald der Trade {_esc(f'{pct}%')} Gewinn erreicht, springt der SL auf den Kaufpreis\\._\n"
                 f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
@@ -1976,11 +2053,27 @@ class TelegramNewsBot:
             return
         symbol = _normalize_symbol(context.args[0])
         raw    = context.args[1].lower()
+
+        # Vorherigen Zustand abrufen für die Bestätigung
+        was_enabled, was_pct_str = False, "–"
+        try:
+            resp0 = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
+            for b in resp0.json():
+                if b.get("symbol") == symbol:
+                    st = b.get("state", {})
+                    was_enabled = st.get("use_trailing_sl", "False") == "True"
+                    was_pct_raw = float(st.get("trailing_sl_pct", "0.02") or "0.02")
+                    was_pct_str = f"{was_pct_raw * 100:.1f}%"
+                    break
+        except Exception:
+            pass
+
         if raw in ("off", "aus", "deaktivieren", "false", "0", "no", "nein"):
             result = _call_set_runtime_params(self.cfg.web_api_base, symbol, trailing_sl="false")
             if result["ok"]:
+                prev = f" \\(war: ✅ {_esc(was_pct_str)}\\)" if was_enabled else " \\(war: bereits aus\\)"
                 await update.message.reply_text(
-                    f"✅ *{_esc(symbol)}* Trailing\\-SL deaktiviert\\.\n"
+                    f"✅ *{_esc(symbol)}* Trailing\\-SL deaktiviert{prev}\\.\n"
                     f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
@@ -1999,8 +2092,13 @@ class TelegramNewsBot:
             trailing_sl="true", trailing_sl_pct=str(pct / 100),
         )
         if result["ok"]:
+            if was_enabled:
+                prev = f" \\(war: {_esc(was_pct_str)}\\)"
+            else:
+                prev = " \\(war: deaktiviert\\)"
             await update.message.reply_text(
-                f"✅ *{_esc(symbol)}* Trailing\\-SL auf `{_esc(f'{pct}%')}` gesetzt\\.\n"
+                f"✅ *{_esc(symbol)}* Trailing\\-SL auf `{_esc(f'{pct}%')}` gesetzt{prev}\\.\n"
+                f"_SL folgt dem Kurs nach oben und bleibt {_esc(f'{pct}%')} unter dem Hochpunkt\\._\n"
                 f"_Wirkt beim nächsten Loop \\(\\~60s\\)\\._",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
@@ -2028,17 +2126,72 @@ class TelegramNewsBot:
                 return
             b   = bots[symbol]
             st  = b.get("state", {})
+
+            # Feature-Strings
+            trail_on  = st.get("use_trailing_sl", "False") == "True"
+            trail_pct = float(st.get("trailing_sl_pct", "0.02") or "0.02") * 100
+            be_on     = st.get("breakeven_enabled", "False") == "True"
+            be_pct    = float(st.get("breakeven_trigger_pct", "0.01") or "0.01") * 100
+            vol_on    = st.get("volume_filter", "False") == "True"
+            vol_fac   = st.get("volume_factor", "1.2")
+            ptp_on    = st.get("partial_tp_enabled", "False") == "True"
+            ptp_frac  = int(float(st.get("partial_tp_fraction", "0.5") or "0.5") * 100)
+            htf_tf    = st.get("htf_timeframe", "")
+            buf       = float(st.get("safety_buffer_pct", "0.10") or "0.10") * 100
+            cooldown  = st.get("sl_cooldown_candles", "3")
+            paused    = st.get("paused", "false").lower() == "true"
+
+            trail_str = f"✅ {trail_pct:.1f}%" if trail_on else "❌ aus"
+            be_str    = f"✅ {be_pct:.1f}%"    if be_on    else "❌ aus"
+            vol_str   = f"✅ ×{vol_fac}"        if vol_on   else "❌ aus"
+            ptp_str   = f"✅ {ptp_frac}%"       if ptp_on   else "❌ aus"
+            htf_str   = f"✅ {htf_tf} \\({st.get('htf_fast','9')}/{st.get('htf_slow','21')}\\)" if htf_tf else "❌ aus"
+
             lines = [
                 f"⚙️ *Parameter: {_esc(symbol)}*\n",
-                f"SMA:     Fast `{st.get('fast_period','?')}` / Slow `{st.get('slow_period','?')}`",
-                f"RSI:     buy \\< `{st.get('supervisor_rsi_buy_max', st.get('rsi_buy_max','?'))}` "
-                f"/ sell \\> `{st.get('supervisor_rsi_sell_min', st.get('rsi_sell_min','?'))}`",
-                f"ATR SL:  `×{st.get('supervisor_atr_sl_mult','?')}`  "
-                f"ATR TP: `×{st.get('supervisor_atr_tp_mult','?')}`",
-                f"Regime:  `{b.get('regime','–')}`  ADX: `{st.get('supervisor_adx','–')}`",
-                f"Strategie: `{b.get('strategy_name','–')}` \\(Sim: `{b.get('sim_pnl','–')}%`\\)",
-                f"Fallback SL: `{float(st.get('sl_pct',0.03))*100:.1f}%` "
-                f"/ TP: `{float(st.get('tp_pct',0.06))*100:.1f}%`",
+                f"Timeframe: `{_esc(st.get('timeframe','5m'))}` \\| SMA: Fast `{st.get('fast_period','?')}` / Slow `{st.get('slow_period','?')}`",
+                f"Regime:    `{_esc(b.get('regime','–'))}` \\| ADX: `{st.get('supervisor_adx','–')}` \\| ATR%: `{st.get('supervisor_atr_pct','–')}`",
+                f"RSI:       Kauf\\-Max `{st.get('supervisor_rsi_buy_max', st.get('rsi_buy_max','?'))}` "
+                f"\\| Verk\\.\\-Min `{st.get('supervisor_rsi_sell_min', st.get('rsi_sell_min','?'))}`",
+                f"ATR\\-Mult: SL `×{st.get('supervisor_atr_sl_mult','?')}` \\| TP `×{st.get('supervisor_atr_tp_mult','?')}`",
+                f"Strategie: `{_esc(b.get('strategy_name','–'))}` \\(Sim\\-P&L: `{_esc(str(b.get('sim_pnl','–')))}%`\\)",
+                f"",
+                f"SL/TP \\(Fallback\\): `{float(st.get('sl_pct',0.03))*100:.1f}%` / `{float(st.get('tp_pct',0.06))*100:.1f}%`",
+                f"Trailing SL:  {_esc(trail_str)}",
+                f"Breakeven SL: {_esc(be_str)}",
+                f"SL\\-Cooldown: `{cooldown}` Candles",
+                f"",
+                f"Volumen\\-Filter: {_esc(vol_str)}",
+                f"Partial TP:     {_esc(ptp_str)}",
+                f"HTF\\-Filter:    {htf_str}",
+                f"Safety Buffer:  `{buf:.1f}%`",
+            ]
+            if paused:
+                lines.append(f"Status: ⏸ *Pausiert* \\(keine neuen Käufe\\)")
+
+            # Sentiment-Filter
+            s_score_raw = st.get("current_sentiment_score", "")
+            s_score     = float(s_score_raw) if s_score_raw else None
+            sb_on   = st.get("sentiment_buy_enabled",    "False") == "True"
+            sb_min  = float(st.get("sentiment_buy_min",        "0.1")  or "0.1")
+            ss_on   = st.get("sentiment_sell_enabled",   "False") == "True"
+            ss_max  = float(st.get("sentiment_sell_max",       "-0.3") or "-0.3")
+            ss_mode = st.get("sentiment_sell_mode", "block")
+            st_on   = st.get("sentiment_stop_enabled",   "False") == "True"
+            st_thr  = float(st.get("sentiment_stop_threshold", "-0.5") or "-0.5")
+            mode_lbl = {"block": "BUY sperren", "close": "Pos\\. schließen", "both": "Schließen\\+sperren"}
+            if s_score is not None:
+                s_emoji = "📈" if s_score >= 0.1 else ("📉" if s_score <= -0.1 else "⚖️")
+                s_str = f"`{s_score:+.3f}` {s_emoji}"
+            else:
+                s_str = "– \\(kein Score\\)"
+            lines += [
+                "",
+                f"📰 *Sentiment\\-Filter*",
+                f"Akt\\. Score:    {s_str}",
+                f"BUY\\-Gate:     {'✅ ≥ ' + _esc(f'{sb_min:+.2f}') if sb_on else '❌ aus'}",
+                f"SELL\\-Trigger: {'✅ ≤ ' + _esc(f'{ss_max:+.2f}') + ' \\(' + mode_lbl.get(ss_mode, _esc(ss_mode)) + '\\)' if ss_on else '❌ aus'}",
+                f"Auto\\-Stop:    {'✅ ≤ ' + _esc(f'{st_thr:+.2f}') if st_on else '❌ aus'}",
             ]
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
@@ -2097,6 +2250,8 @@ class TelegramNewsBot:
                 "trailing_sl_pct": st.get("trailing_sl_pct"),
                 "breakeven":      st.get("breakeven_enabled"),
                 "volume_filter":  st.get("volume_filter"),
+                "partial_tp":     st.get("partial_tp"),
+                "htf_filter":     bool(st.get("htf_timeframe")),
                 "rsi_buy_max":    st.get("supervisor_rsi_buy_max") or st.get("rsi_buy_max"),
                 "rsi_sell_min":   st.get("supervisor_rsi_sell_min") or st.get("rsi_sell_min"),
                 "trades_gesamt":  len(valid),
@@ -2115,7 +2270,17 @@ class TelegramNewsBot:
                 "Format: Pro Bot maximal 5–7 präzise Bullet-Points. Jeder Tipp mit konkretem Wert "
                 "(z.B. 'Fast MA von 9 → 7 senken' statt 'SMA anpassen').\n"
                 "Wenn zu wenige Trades für Aussagen vorhanden sind, sage das klar und gib nur allgemeine Hinweise.\n\n"
-                "Faustregeln:\n"
+                "WICHTIG – Redundanzprüfung:\n"
+                "Prüfe vor JEDEM Tipp die aktuellen Bot-Daten. Empfehle niemals etwas, das bereits gesetzt ist:\n"
+                "• volume_filter=true  → KEIN Tipp 'Volume-Filter aktivieren'\n"
+                "• breakeven=true      → KEIN Tipp 'Breakeven aktivieren'\n"
+                "• trailing_sl=true    → KEIN Tipp 'Trailing SL aktivieren'\n"
+                "• partial_tp=true     → KEIN Tipp 'Partial TP aktivieren'\n"
+                "• htf_filter=true     → KEIN Tipp 'HTF-Filter aktivieren'\n"
+                "• status='stopped'    → KEIN Tipp 'Bot starten'\n"
+                "Wenn alle sinnvollen Features für das aktuelle Regime bereits aktiv sind, sage das explizit "
+                "('Konfiguration bereits gut für dieses Regime') und fokussiere auf numerische Anpassungen.\n\n"
+                "Faustregeln (nur anwenden wenn das Feature noch NICHT aktiv ist):\n"
                 "• TREND + hoher ADX: größere SMA-Perioden (slow ≥21), Trailing SL sinnvoll\n"
                 "• RANGE: kleinere Perioden (fast 7–9), kein Trailing, eher Partial TP\n"
                 "• VOLATILE: größerer SL%, Breakeven früh setzen, Volume-Filter aktivieren\n"
@@ -2592,6 +2757,40 @@ def _parse_multi_params(args: list[str]) -> dict:
                 else:
                     params["partial_tp"] = True
                     params["partial_tp_fraction"] = float(v)
+            # --- Sentiment-Filter ---
+            elif k in ("sentiment_buy", "sent_buy", "sbuy"):
+                if v in OFF:
+                    params["sentiment_buy_enabled"] = False
+                elif v in ON:
+                    params["sentiment_buy_enabled"] = True
+                else:
+                    params["sentiment_buy_enabled"] = True
+                    params["sentiment_buy_min"] = float(v)
+            elif k in ("sentiment_buy_min", "sbuy_min"):
+                params["sentiment_buy_min"] = float(v)
+            elif k in ("sentiment_sell", "sent_sell", "ssell"):
+                if v in OFF:
+                    params["sentiment_sell_enabled"] = False
+                elif v in ON:
+                    params["sentiment_sell_enabled"] = True
+                else:
+                    params["sentiment_sell_enabled"] = True
+                    params["sentiment_sell_max"] = float(v)
+            elif k in ("sentiment_sell_max", "ssell_max"):
+                params["sentiment_sell_max"] = float(v)
+            elif k in ("sell_mode", "sent_mode", "sentiment_sell_mode"):
+                if v in ("block", "close", "both"):
+                    params["sentiment_sell_mode"] = v
+            elif k in ("sentiment_stop", "sent_stop", "sstop"):
+                if v in OFF:
+                    params["sentiment_stop_enabled"] = False
+                elif v in ON:
+                    params["sentiment_stop_enabled"] = True
+                else:
+                    params["sentiment_stop_enabled"] = True
+                    params["sentiment_stop_threshold"] = float(v)
+            elif k in ("sentiment_stop_threshold", "sstop_thr"):
+                params["sentiment_stop_threshold"] = float(v)
         except (ValueError, TypeError):
             pass
     return params

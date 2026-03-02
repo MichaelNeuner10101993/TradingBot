@@ -122,6 +122,14 @@ SMA-Crossover (BUY / SELL / HOLD)
     │
     ▼  ← HTF-Trend-Filter (blockiert Käufe gegen übergeordneten Trend)
     │
+    ▼  ← BEAR-Regime (Supervisor erkennt Abwärtstrend → BUY unterdrückt)
+    │
+    ▼  ← Sentiment Auto-Stop (Score < Schwelle → Bot pausiert)
+    │
+    ▼  ← Sentiment SELL-Trigger (Score < Schwelle → SELL / BUY sperren / beides)
+    │
+    ▼  ← Sentiment BUY-Gate (Score < Min → BUY → HOLD)
+    │
     ▼  ← Volumen-Filter (blockiert Signale bei unterdurchschnittlichem Volumen)
     │
     ▼  ← SL-Cooldown (blockiert Käufe kurz nach einem Stop-Loss)
@@ -375,6 +383,50 @@ Verhindert sofortigen Wiedereinstieg in einen weiter fallenden Markt.
 - **0.10 (10%, Standard):** 10% Reserve bleiben immer übrig. Deckt Kraken-Gebühren und unerwartete Situationen ab.
 - **0.15–0.20:** Konservativ – weniger Kapital im Einsatz, geringere Rendite aber höherer Puffer.
 - Der Safety Buffer wird einmal auf die Gesamt-Balance angewendet, dann wird der Rest gleichmäßig auf alle aktiven Bots aufgeteilt.
+
+---
+
+### 11. Sentiment-Filter (optional, per Bot konfigurierbar)
+
+Der Supervisor schreibt alle 5 Minuten den aktuellen Sentiment-Score (`current_sentiment_score`) in jede Bot-DB –
+als gewichteten Durchschnitt der letzten 4 Stunden aus `news.db`. Jeder Bot kann daraufhin unabhängig reagieren.
+
+**Score-Berechnung:** VADER + TextBlob kombiniert (−1.0 bis +1.0), gewichtet nach Quelle:
+
+| Quelle | Gewicht | Begründung |
+|--------|---------|------------|
+| Fear & Greed Index | 2.5× | Direkter Marktsentiment-Indikator |
+| CryptoPanic | 2.0× | Kuratierte Krypto-News |
+| RSS-Feeds | 1.0× | Standard-Basis |
+| Google News | 0.7× | Allgemein, wenig Krypto-spezifisch |
+| CoinGecko Trending | 0.0× | Ausgeschlossen (kein echter Sentiment) |
+
+**Drei unabhängige Filter pro Bot:**
+
+**BUY-Gate** – Nur kaufen wenn Sentiment ausreichend positiv:
+```
+BUY-Signal + score < buy_min → Signal wird zu HOLD umgewandelt
+```
+Standard-Schwelle: `0.1` (leicht positives Sentiment erforderlich)
+
+**SELL-Trigger** – Reaktion wenn Sentiment sehr negativ wird:
+
+| Modus | Verhalten |
+|-------|-----------|
+| `block` (Standard) | BUY-Signale werden gesperrt (HOLD) |
+| `close` | Offene Position wird sofort geschlossen (SELL) |
+| `both` | Position schließen + weitere BUYs sperren |
+
+Standard-Schwelle: `−0.3` (klar negativer Score)
+
+**Auto-Stop** – Bot automatisch pausieren bei extremem Negativsentiment:
+```
+score < stop_threshold → Bot pausiert (wie ⏸ PAU im Dashboard)
+```
+Standard-Schwelle: `−0.5`. Bot muss manuell (Dashboard, Telegram) wieder fortgesetzt werden.
+
+**Konfiguration** per Dashboard (⚙-Button → Erweiterte Einstellungen → 📰 Sentiment-Filter)
+oder per Telegram (`/start_bot BTC/EUR sentiment_buy=0.1 sentiment_sell=-0.3 sell_mode=block`).
 
 ---
 
@@ -642,6 +694,9 @@ Gleichzeitig wird `bot.conf.d/SYMBOL.conf` aktualisiert → Werte bleiben nach N
 | Breakeven SL | Ein/Aus + Trigger % |
 | Volumen-Filter | Ein/Aus + Faktor |
 | Partial Take-Profit | Ein/Aus + Anteil % |
+| Sentiment BUY-Gate | Ein/Aus + Min-Score (z.B. 0.1) |
+| Sentiment SELL-Trigger | Ein/Aus + Max-Score (z.B. −0.3) + Modus (block/close/both) |
+| Sentiment Auto-Stop | Ein/Aus + Schwelle (z.B. −0.5) |
 
 ### Bot hinzufügen
 
@@ -670,6 +725,13 @@ Im Dialog **+ Bot hinzufügen** gibt es zwei Bereiche:
 | HTF-Timeframe | – | Dropdown: deaktiviert / 15m / 1h / 4h / 1d |
 | HTF Fast SMA | 9 | Periode für HTF-Trend-Beurteilung |
 | HTF Slow SMA | 21 | Periode für HTF-Trend-Beurteilung |
+| Sentiment BUY-Gate ☑ | aus | Nur kaufen wenn Score ≥ Min |
+| Min-Score | 0.1 | Wird aktiv wenn Checkbox gesetzt |
+| Sentiment SELL-Trigger ☑ | aus | Reaktion wenn Score < Max |
+| Max-Score | −0.3 | Wird aktiv wenn Checkbox gesetzt |
+| Modus | block | block / close / both |
+| Sentiment Auto-Stop ☑ | aus | Bot pausieren wenn Score < Schwelle |
+| Schwelle | −0.5 | Wird aktiv wenn Checkbox gesetzt |
 
 Beim **▶ Starten** (Wiederstart eines gestoppten Bots aus der Card) werden alle gespeicherten Feature-Flags automatisch wiederhergestellt.
 
@@ -781,6 +843,11 @@ gefetcht → [Qualität] → [Alter] → [URL-Dedup] → [Titel-Dedup] → [Rele
 
 - **VADER** (70%) + **TextBlob** (30%) → kombinierter Score −1.0 bis +1.0
 - `bearish` < −0.3 · `neutral` −0.3…+0.3 · `bullish` > +0.3
+- **Crypto-Lexikon**: VADER wurde um 56 Krypto-spezifische Begriffe erweitert (`bullish` +2.5, `rugpull` −3.5, `hack` −2.5, `mooning` +2.5, …)
+- **Quellen-Gewichtung**: Fear & Greed 2.5× · CryptoPanic 2.0× · RSS 1.0× · Google 0.7× · CoinGecko 0.0× (ausgeschlossen)
+- **Full-Body-Crawling**: Artikel-Text wird vollständig extrahiert (trafilatura), nicht nur Titel
+- **Supervisor-Integration**: Alle 5 min schreibt der Supervisor den gewichteten 4h-Durchschnitt
+  als `current_sentiment_score` in jede Bot-DB (Basis für Sentiment-Filter in `main.py`)
 
 ### News-Agent starten
 
@@ -804,7 +871,7 @@ sudo systemctl start news-agent
 | `/sentiment BTC/EUR` | Aktueller News-Sentiment für einen Coin |
 | `/news` | 10 stärkste News der letzten 48h |
 | `/news BTC/EUR` | 5 neueste News für diesen Coin |
-| `/params BTC/EUR` | Parameter: SMA, RSI, ATR, Regime, Fallback SL/TP, alle Feature-Flags |
+| `/params BTC/EUR` | Parameter: SMA, RSI, ATR, Regime, Fallback SL/TP, alle Feature-Flags, Sentiment-Filter + aktueller Score |
 | `/start_bot BTC/EUR [params]` | Bot starten (ohne params: gespeicherte Werte; mit params: Override) |
 | `/stop_bot BTC/EUR` | Bot stoppen |
 | `/stop_all` | Alle laufenden Bots sofort stoppen |
@@ -848,6 +915,10 @@ sudo systemctl start news-agent
 | `nopartial` | – | Partial-TP deaktivieren |
 | `novol` | – | Volumen-Filter deaktivieren |
 | `nohtf` | – | HTF-Filter deaktivieren |
+| `sentiment_buy=N` / `sbuy=N` | `sbuy=0.1` | BUY-Gate Min-Score (aktiviert automatisch) |
+| `sentiment_sell=N` / `ssell=N` | `ssell=-0.3` | SELL-Trigger Max-Score (aktiviert automatisch) |
+| `sell_mode=X` / `sent_mode=X` | `sell_mode=block` | SELL-Modus: `block` / `close` / `both` |
+| `sentiment_stop=N` / `sstop=N` | `sstop=-0.5` | Auto-Stop Schwelle (aktiviert automatisch) |
 
 Bestätigung zeigt alle aktiven Features:
 ```

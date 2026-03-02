@@ -17,6 +17,18 @@ from news import sentiment as sent
 
 logger = logging.getLogger(__name__)
 
+# Quellen-Gewichtung für Konsens-Score.
+# Höher = verlässlicheres Sentiment-Signal.
+# coingecko=0: Trending-Daten sind kein Sentiment → komplett raus aus Alerts.
+SOURCE_WEIGHTS: dict[str, float] = {
+    "fear_greed":  2.5,   # Echter Marktdaten-Index
+    "cryptopanic": 2.0,   # Kuratierte Krypto-News
+    "rss":         1.0,   # Etablierte Medien (CoinTelegraph, Decrypt, …)
+    "google":      0.7,   # Breite Abdeckung, weniger Krypto-spezifisch
+    "twitter":     0.6,   # Social-Media-Rauschen
+    "coingecko":   0.0,   # Popularität ≠ Sentiment → nicht in Alerts
+}
+
 
 # ---------------------------------------------------------------------------
 # Datenbank-Setup
@@ -347,7 +359,8 @@ class NewsAgent:
             self.conn.commit()
 
             # 8. Alert-Kandidat sammeln wenn Score über Schwelle
-            if abs(score) >= self.cfg.sentiment_threshold:
+            # coingecko = Trending-Daten, kein Sentiment → kein Alert
+            if abs(score) >= self.cfg.sentiment_threshold and item.source != "coingecko":
                 event_id = self.conn.execute(
                     "SELECT id FROM news_events WHERE url_hash = ?", (item.url_hash,)
                 ).fetchone()["id"]
@@ -417,8 +430,16 @@ class NewsAgent:
                     self.telegram.send_alert(a["item"], a["score"], a["label"], a["coins"], a["event_id"])
                     self.conn.execute("UPDATE news_events SET alerted=1 WHERE id=?", (a["event_id"],))
                 else:
-                    scores = [a["score"] for a in articles]
-                    consensus = sum(scores) / len(scores)
+                    # Gewichteter Konsens: verlässlichere Quellen haben mehr Einfluss
+                    weighted_sum = sum(
+                        a["score"] * SOURCE_WEIGHTS.get(a["item"].source, 1.0)
+                        for a in articles
+                    )
+                    total_weight = sum(
+                        SOURCE_WEIGHTS.get(a["item"].source, 1.0)
+                        for a in articles
+                    )
+                    consensus = weighted_sum / total_weight if total_weight > 0 else 0.0
                     consensus_label = sent.score_to_label(consensus)
                     self.telegram.send_aggregated_alert(coin, articles, consensus, consensus_label)
                     for a in articles:

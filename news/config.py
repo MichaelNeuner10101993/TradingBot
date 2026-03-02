@@ -23,8 +23,9 @@ class NewsAgentConfig:
     title_dedupe_threshold: float = 0.50 # Jaccard-Ähnlichkeit ab der = Duplikat
     # Qualitätsfilter: Artikel mit zu kurzem Titel (Reddit-Posts, Placeholders etc.)
     min_title_words: int = 5             # Mindestanzahl Wörter im Titel
-    # Volltext-Crawling via trafilatura (opt-in, langsamer)
-    fetch_full_body: bool = False
+    # Volltext-Crawling via trafilatura – mehr Text = stabilere Sentiment-Scores
+    # Aktiviert: crawlt Artikel-Body wenn RSS-Summary < 150 Zeichen
+    fetch_full_body: bool = True
     # Alert-Aggregation: mehrere Artikel pro Coin werden zu einem Konsens-Alert zusammengefasst
     alert_cooldown_minutes: int = 60   # kein zweiter Alert für denselben Coin innerhalb von N Minuten
 

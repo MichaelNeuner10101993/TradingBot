@@ -341,6 +341,7 @@ def _load_bot(db_path: str) -> dict:
             "total_expect_loss_eur":    round(total_expect_loss_eur, 2),
             "process_running":          process_running,
             "paused":                   state.get("paused", "false").lower() == "true",
+            "sentiment_score":          state.get("current_sentiment_score", ""),
         }
     except Exception as e:
         return {
@@ -761,7 +762,10 @@ def api_set_runtime_params():
                     "volume_filter", "volume_factor",
                     "partial_tp", "partial_tp_fraction",
                     "rsi_buy_max", "rsi_sell_min",
-                    "fast_period", "slow_period"):
+                    "fast_period", "slow_period",
+                    "sentiment_buy_enabled", "sentiment_buy_min",
+                    "sentiment_sell_enabled", "sentiment_sell_max", "sentiment_sell_mode",
+                    "sentiment_stop_enabled", "sentiment_stop_threshold"):
             val = data.get(key)
             if val is not None:
                 db.set_state(f"pending_{key}", str(val))

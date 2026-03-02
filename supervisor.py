@@ -230,6 +230,93 @@ def _write(
         log.error(f"DB-Schreibfehler ({db_path}): {e}")
 
 
+def _update_sentiment_scores(db_dir: str) -> None:
+    """
+    Liest gewichtete Sentiment-Scores der letzten 4h aus news.db und schreibt
+    'current_sentiment_score' in jede Bot-DB (nur wenn Daten vorhanden).
+    Gewichtung identisch zu SOURCE_WEIGHTS in news/agent.py.
+    """
+    import sqlite3
+    from datetime import datetime, timezone, timedelta
+
+    log = logging.getLogger("supervisor")
+
+    news_db = os.path.join(db_dir, "news.db")
+    if not os.path.exists(news_db):
+        log.debug("Sentiment-Update: news.db nicht gefunden – übersprungen")
+        return
+
+    SOURCE_WEIGHTS = {
+        "fear_greed":  2.5,
+        "cryptopanic": 2.0,
+        "rss":         1.0,
+        "google":      0.7,
+        "twitter":     0.6,
+        "coingecko":   0.0,
+    }
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    try:
+        conn = sqlite3.connect(news_db, check_same_thread=False)
+        rows = conn.execute(
+            "SELECT symbol, score, source FROM sentiment_scores WHERE timestamp > ?",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("Sentiment-Update: news.db Lesefehler – %s", e)
+        return
+
+    if not rows:
+        log.debug("Sentiment-Update: keine Daten der letzten 4h")
+        return
+
+    # Gewichteten Durchschnitt pro Symbol berechnen
+    from collections import defaultdict
+    weighted_sum: dict[str, float] = defaultdict(float)
+    total_weight: dict[str, float] = defaultdict(float)
+    for symbol, score, source in rows:
+        w = SOURCE_WEIGHTS.get(source, 1.0)
+        if w > 0:
+            weighted_sum[symbol] += score * w
+            total_weight[symbol] += w
+
+    scores_by_symbol: dict[str, float] = {
+        sym: round(weighted_sum[sym] / total_weight[sym], 4)
+        for sym in weighted_sum
+        if total_weight[sym] > 0
+    }
+
+    # MARKET-Score als Fallback für Coins ohne eigene Daten
+    market_score = scores_by_symbol.get("MARKET")
+
+    # In Bot-DBs schreiben
+    db_paths = [
+        p for p in sorted(glob(os.path.join(db_dir, "*.db")))
+        if os.path.basename(p) not in ("candles.db", "news.db")
+    ]
+    for db_path in db_paths:
+        try:
+            bot_db = StateDB(db_path)
+            symbol = bot_db.get_state("symbol", "")
+            if not symbol:
+                bot_db.close()
+                continue
+            score = scores_by_symbol.get(symbol, market_score)
+            if score is not None:
+                bot_db.set_state("current_sentiment_score", str(score))
+                log.debug("Sentiment %s: %+.4f", symbol, score)
+            bot_db.close()
+        except Exception as e:
+            log.warning("Sentiment-Update: DB-Schreibfehler (%s) – %s", db_path, e)
+
+    log.info(
+        "Sentiment-Update: %d Symbol(e) aktualisiert (%s)",
+        len(scores_by_symbol),
+        ", ".join(f"{s}={v:+.3f}" for s, v in scores_by_symbol.items() if s != "MARKET"),
+    )
+
+
 def _cross_bot_learning(results: dict, dry_run: bool):
     """
     Cross-Bot Learning: Teilt die beste Strategie eines Coins mit anderen Coins
@@ -547,6 +634,9 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
 
         # Peer Learning: Strategien mit anderen Pi-Instanzen teilen
         _peer_learning(results, dry_run)
+
+        # Sentiment-Scores aus news.db in Bot-DBs schreiben
+        _update_sentiment_scores(db_dir)
 
     finally:
         conn_c.close()

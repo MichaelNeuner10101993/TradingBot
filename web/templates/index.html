@@ -504,6 +504,45 @@
       box-shadow: 0 4px 12px rgba(0,0,0,.5);
     }
 
+    /* ── Aktive Konfiguration ────────────────────────────── */
+    .cfg-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 28px;
+      font-size: 11px;
+    }
+    @media (max-width: 600px) { .cfg-grid { grid-template-columns: 1fr; } }
+    .cfg-group-title {
+      color: #484f58;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: 5px;
+      padding-bottom: 3px;
+      border-bottom: 1px solid #21262d;
+    }
+    .cfg-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 6px;
+      padding: 1px 0;
+      line-height: 1.75;
+    }
+    .cfg-key {
+      color: #8b949e;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .cfg-val {
+      color: #e6edf3;
+      text-align: right;
+      font-family: 'Courier New', monospace;
+      word-break: break-all;
+    }
+    .cfg-on  { color: #3fb950; }
+    .cfg-off { color: #484f58; }
+
     /* ── Market-Suche Dropdown ──────────────────────────── */
     .market-wrap { position: relative; }
     .market-dd {
@@ -807,6 +846,13 @@
                 "volume_factor":       bot.state.get("volume_factor", "1.2")|float,
                 "partial_tp":          bot.state.get("partial_tp_enabled", "False") == "True",
                 "partial_tp_fraction": (bot.state.get("partial_tp_fraction", "0.5")|float * 100)|round(0)|int,
+                "sentiment_buy_enabled":    bot.state.get("sentiment_buy_enabled",    "False") == "True",
+                "sentiment_buy_min":        bot.state.get("sentiment_buy_min",        "0.1")|float,
+                "sentiment_sell_enabled":   bot.state.get("sentiment_sell_enabled",   "False") == "True",
+                "sentiment_sell_max":       bot.state.get("sentiment_sell_max",       "-0.3")|float,
+                "sentiment_sell_mode":      bot.state.get("sentiment_sell_mode",      "block"),
+                "sentiment_stop_enabled":   bot.state.get("sentiment_stop_enabled",   "False") == "True",
+                "sentiment_stop_threshold": bot.state.get("sentiment_stop_threshold", "-0.5")|float,
             } | tojson }}'>⚙</button>
   </div>
 
@@ -893,6 +939,178 @@
       {% else %}
       <div class="empty">Kein offener Trade.</div>
       {% endif %}
+    </div>
+
+    <!-- Aktive Konfiguration -->
+    <div class="sub-section">
+      <h3>Aktive Konfiguration</h3>
+      <div class="cfg-grid">
+
+        <!-- Strategie & Timing -->
+        <div>
+          <div class="cfg-group-title">📈 Strategie &amp; Timing</div>
+          {% set _tf   = bot.state.get('timeframe', '5m') %}
+          {% set _fast = bot.state.get('fast_period', '9') %}
+          {% set _slow = bot.state.get('slow_period', '21') %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Kerzen-Größe für Signalberechnung. 5m = alle 5 Min. eine Entscheidung.">Timeframe</span><span class="cfg-val">{{ _tf }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Schneller gleitender Durchschnitt – kreuzt Slow MA = Signal.">Fast MA</span><span class="cfg-val">{{ _fast }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Langsamer gleitender Durchschnitt.">Slow MA</span><span class="cfg-val">{{ _slow }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Vom Supervisor gewählte Strategie-Variante.">Strategie</span><span class="cfg-val" style="color:#58a6ff">{{ bot.strategy_name }}</span></div>
+          {% set _sp = bot.sim_pnl %}
+          {% if _sp and _sp != '–' %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Simulierter P&L (Backtest) der aktuellen Strategie im Walk-Forward-Test.">Sim-P&L</span>
+            <span class="cfg-val" style="color:{% if _sp|float > 0 %}#3fb950{% elif _sp|float < 0 %}#f85149{% else %}#484f58{% endif %}">{{ _sp }}%</span>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- Indikatoren & Regime -->
+        <div>
+          <div class="cfg-group-title">📊 Indikatoren &amp; Regime</div>
+          {% set _rsi_buy  = bot.state.get('supervisor_rsi_buy_max',  bot.state.get('effective_rsi_buy_max',  bot.state.get('rsi_buy_max',  '65'))) %}
+          {% set _rsi_sell = bot.state.get('supervisor_rsi_sell_min', bot.state.get('effective_rsi_sell_min', bot.state.get('rsi_sell_min', '35'))) %}
+          {% set _atr_sl   = bot.state.get('supervisor_atr_sl_mult', '–') %}
+          {% set _atr_tp   = bot.state.get('supervisor_atr_tp_mult', '–') %}
+          {% set _rsi_now  = bot.state.get('rsi', '–') %}
+          {% if bot.regime != '–' %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Marktregime (Supervisor-Analyse alle 5 Min.)">Regime</span>
+            <span class="cfg-val">
+              {% set _rcls = {'BULL':'bull','BEAR':'bear','SIDEWAYS':'sideways','VOLATILE':'volatile','EXTREME':'extreme','TREND':'trend'}.get(bot.regime, 'noregime') %}
+              <span class="badge {{ _rcls }}" style="font-size:9px;padding:0 5px">{{ bot.regime }}</span>
+            </span>
+          </div>
+          {% endif %}
+          {% if bot.regime_adx != '–' %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="ADX – Trendstärke: &gt;22 = Trend, &lt;22 = Seitwärts/Range.">ADX</span><span class="cfg-val">{{ bot.regime_adx }}</span></div>
+          {% endif %}
+          {% if bot.regime_atr_pct != '–' %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="ATR als % des Kurses: aktuelle Markt-Volatilität.">ATR%</span><span class="cfg-val">{{ bot.regime_atr_pct }}%</span></div>
+          {% endif %}
+          {% if _rsi_now != '–' %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="RSI aktuell (Wilder's 14-Perioden). &gt;65 = überkauft, &lt;35 = überverkauft.">RSI jetzt</span>
+            <span class="cfg-val" style="color:{% if _rsi_now|float > 65 %}#f85149{% elif _rsi_now|float < 35 %}#3fb950{% else %}#8b949e{% endif %}">{{ _rsi_now }}</span>
+          </div>
+          {% endif %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Kauf: kein BUY wenn RSI über diesem Wert.">RSI Kauf-Max</span><span class="cfg-val">{{ _rsi_buy }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Verkauf: kein SELL wenn RSI unter diesem Wert.">RSI Verk.-Min</span><span class="cfg-val">{{ _rsi_sell }}</span></div>
+          {% if _atr_sl != '–' %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="ATR-Multiplikator für Stop-Loss. SL = ATR × Mult unter Entry.">ATR SL ×</span><span class="cfg-val">{{ _atr_sl }}</span></div>
+          {% endif %}
+          {% if _atr_tp != '–' %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="ATR-Multiplikator für Take-Profit. TP = ATR × Mult über Entry.">ATR TP ×</span><span class="cfg-val">{{ _atr_tp }}</span></div>
+          {% endif %}
+        </div>
+
+        <!-- Stop-Loss & Take-Profit -->
+        <div>
+          <div class="cfg-group-title">🛑 Stop-Loss &amp; Take-Profit</div>
+          {% set _sl_pct = (bot.state.get('sl_pct', '0.03')|float * 100)|round(2) %}
+          {% set _tp_pct = (bot.state.get('tp_pct', '0.06')|float * 100)|round(2) %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-SL in % – wird genutzt wenn ATR-Berechnung nicht möglich (wenig Daten).">Fallback SL</span><span class="cfg-val" style="color:#f85149">{{ _sl_pct }}%</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-TP in % – wird genutzt wenn ATR-Berechnung nicht möglich.">Fallback TP</span><span class="cfg-val" style="color:#3fb950">{{ _tp_pct }}%</span></div>
+          {% set _trail_on  = bot.state.get('use_trailing_sl', 'False') == 'True' %}
+          {% set _trail_pct = (bot.state.get('trailing_sl_pct', '0.02')|float * 100)|round(1) %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Trailing SL folgt dem Kurs automatisch nach oben – nie nach unten. Sichert wachsende Gewinne.">Trailing SL</span>
+            <span class="cfg-val {% if _trail_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _trail_on %}✅ {{ _trail_pct }}%{% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _be_on  = bot.state.get('breakeven_enabled', 'False') == 'True' %}
+          {% set _be_pct = (bot.state.get('breakeven_trigger_pct', '0.01')|float * 100)|round(1) %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Breakeven: SL springt auf Kaufpreis sobald der Kurs X% gestiegen ist – kein Verlust mehr möglich.">Breakeven SL</span>
+            <span class="cfg-val {% if _be_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _be_on %}✅ {{ _be_pct }}%{% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _cooldown = bot.state.get('sl_cooldown_candles', '3') %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="SL-Cooldown: Anzahl Candles Pause nach einem SL-Hit, bevor wieder gekauft werden darf.">SL-Cooldown</span><span class="cfg-val">{{ _cooldown }} Candles</span></div>
+        </div>
+
+        <!-- Features & Kapital -->
+        <div>
+          <div class="cfg-group-title">⚙ Features &amp; Kapital</div>
+          {% set _vol_on  = bot.state.get('volume_filter', 'False') == 'True' %}
+          {% set _vol_fac = bot.state.get('volume_factor', '1.2') %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Volumen-Filter: Kauf nur wenn aktuelles Volumen über dem Durchschnitt × Faktor liegt.">Volumen-Filter</span>
+            <span class="cfg-val {% if _vol_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _vol_on %}✅ ×{{ _vol_fac }}{% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _ptp_on   = bot.state.get('partial_tp_enabled', 'False') == 'True' %}
+          {% set _ptp_frac = (bot.state.get('partial_tp_fraction', '0.5')|float * 100)|round(0)|int %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Partial TP: beim TP-Hit nur X% der Position verkaufen, Rest läuft weiter mit SL auf Breakeven.">Partial TP</span>
+            <span class="cfg-val {% if _ptp_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _ptp_on %}✅ {{ _ptp_frac }}%{% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _htf_tf = bot.state.get('htf_timeframe', '') %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="HTF-Filter: BUY nur wenn der übergeordnete Timeframe auch einen Aufwärtstrend zeigt.">HTF-Filter</span>
+            {% if _htf_tf %}
+            <span class="cfg-val cfg-on">✅ {{ _htf_tf }} ({{ bot.state.get('htf_fast', '9') }}/{{ bot.state.get('htf_slow', '21') }})</span>
+            {% else %}
+            <span class="cfg-val cfg-off">❌ aus</span>
+            {% endif %}
+          </div>
+          {% set _buf = (bot.state.get('safety_buffer_pct', '0.10')|float * 100)|round(1) %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Safety Buffer: Anteil des Kapitals der nie investiert wird. 10% = von 1000€ werden max. 900€ eingesetzt.">Safety Buffer</span><span class="cfg-val">{{ _buf }}%</span></div>
+          {% set _bq = bot.state.get('balance_quote', '') %}
+          {% set _bb = bot.state.get('balance_base',  '') %}
+          {% if _bq and _bq not in ('', '0', '0.0') %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Verfügbares EUR-Guthaben des Bots (aus letztem API-Abruf).">Balance EUR</span><span class="cfg-val">{{ "%.2f"|format(_bq|float) }} {{ bot.quote }}</span></div>
+          {% endif %}
+          {% if _bb and _bb not in ('', '0', '0.0') %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Gehaltene Coin-Menge des Bots.">Balance Coin</span><span class="cfg-val">{{ _bb }} {{ bot.base }}</span></div>
+          {% endif %}
+          {% if bot.coin_value_eur and bot.coin_value_eur > 0 %}
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Aktueller EUR-Wert der gehaltenen Coin-Menge zum aktuellen Marktpreis.">Coin-Wert</span><span class="cfg-val">{{ "%.2f"|format(bot.coin_value_eur) }} EUR</span></div>
+          {% endif %}
+          {% if bot.paused %}
+          <div class="cfg-row"><span class="cfg-key">Status</span><span class="cfg-val" style="color:#d29922">⏸ Pausiert (keine neuen Käufe)</span></div>
+          {% endif %}
+        </div>
+
+        <!-- Sentiment-Filter -->
+        <div>
+          <div class="cfg-group-title">📰 Sentiment</div>
+          {% set _s_raw   = bot.state.get('current_sentiment_score', '') %}
+          {% set _s_score = _s_raw|float if _s_raw else none %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Gewichteter Sentiment-Score der letzten 4h aus News-Agent (Fear&amp;Greed, CryptoPanic, RSS). Positiv = bullish, negativ = bearish.">Akt. Score</span>
+            {% if _s_score is not none %}
+              {% if _s_score >= 0.1 %}
+                <span class="cfg-val cfg-on">{{ "%+.3f"|format(_s_score) }} 📈</span>
+              {% elif _s_score <= -0.1 %}
+                <span class="cfg-val" style="color:#f85149">{{ "%+.3f"|format(_s_score) }} 📉</span>
+              {% else %}
+                <span class="cfg-val" style="color:#d29922">{{ "%+.3f"|format(_s_score) }} ⚖️</span>
+              {% endif %}
+            {% else %}
+              <span class="cfg-val cfg-off">– (kein Score)</span>
+            {% endif %}
+          </div>
+          {% set _sb_on  = bot.state.get('sentiment_buy_enabled',  'False') == 'True' %}
+          {% set _sb_min = bot.state.get('sentiment_buy_min', '0.1')|float %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="BUY-Gate: Kauf nur erlaubt wenn Sentiment-Score ≥ Min.">BUY-Gate</span>
+            <span class="cfg-val {% if _sb_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _sb_on %}✅ ≥ {{ "%+.2f"|format(_sb_min) }}{% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _ss_on   = bot.state.get('sentiment_sell_enabled', 'False') == 'True' %}
+          {% set _ss_max  = bot.state.get('sentiment_sell_max', '-0.3')|float %}
+          {% set _ss_mode = bot.state.get('sentiment_sell_mode', 'block') %}
+          {% set _mode_lbl = {'block': 'BUY sperren', 'close': 'Pos. schließen', 'both': 'Schließen+sperren'} %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="SELL-Trigger: Reaktion wenn Score unter Max. Score fällt.">SELL-Trigger</span>
+            <span class="cfg-val {% if _ss_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _ss_on %}✅ ≤ {{ "%+.2f"|format(_ss_max) }} ({{ _mode_lbl.get(_ss_mode, _ss_mode) }}){% else %}❌ aus{% endif %}</span>
+          </div>
+          {% set _st_on  = bot.state.get('sentiment_stop_enabled',   'False') == 'True' %}
+          {% set _st_thr = bot.state.get('sentiment_stop_threshold', '-0.5')|float %}
+          <div class="cfg-row">
+            <span class="cfg-key htip" data-tip="Auto-Stop: Bot pausiert automatisch wenn Score unter Schwelle fällt.">Auto-Stop</span>
+            <span class="cfg-val {% if _st_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _st_on %}✅ ≤ {{ "%+.2f"|format(_st_thr) }}{% else %}❌ aus{% endif %}</span>
+          </div>
+        </div>
+
+      </div>
     </div>
 
     <!-- P&L Chart -->
@@ -1101,6 +1319,31 @@
       <label>
         <span class="feat-cb"><input type="checkbox" id="pd-ptp-on"> Partial Take-Profit</span>
         <input id="pd-ptp-pct" type="number" step="5" min="10" max="90" placeholder="Anteil %">
+      </label>
+    </div>
+    <div style="border-top:1px solid #21262d;margin-top:10px;padding-top:8px;font-size:11px;color:#8b949e;margin-bottom:6px">📰 Sentiment-Filter</div>
+    <div class="form-row">
+      <label class="tip" data-tip="BUY-Gate: Kauf nur wenn der aktuelle Sentiment-Score ≥ Min. Score. Verhindert Käufe bei neutralem oder negativem Marktsentiment.">
+        <span class="feat-cb"><input type="checkbox" id="pd-sent-buy-on"> BUY-Gate</span>
+        <input id="pd-sent-buy-min" type="number" step="0.05" min="-1" max="1" placeholder="Min. Score">
+      </label>
+      <label class="tip" data-tip="Auto-Stop: Bot wird pausiert wenn Score unter Schwelle fällt. Manuell wieder aktivierbar.">
+        <span class="feat-cb"><input type="checkbox" id="pd-sent-stop-on"> Auto-Stop</span>
+        <input id="pd-sent-stop-thr" type="number" step="0.05" min="-1" max="0" placeholder="Schwelle">
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="tip" data-tip="SELL-Trigger: Reaktion wenn Score unter Max. Score fällt. Modus wählt die Aktion.">
+        <span class="feat-cb"><input type="checkbox" id="pd-sent-sell-on"> SELL-Trigger</span>
+        <input id="pd-sent-sell-max" type="number" step="0.05" min="-1" max="0" placeholder="Max. Score">
+      </label>
+      <label>
+        <span style="font-size:11px;color:#8b949e">Trigger-Modus</span>
+        <select id="pd-sent-sell-mode" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 6px;font-size:12px">
+          <option value="block">Nur BUY sperren</option>
+          <option value="close">Position schließen</option>
+          <option value="both">Schließen + sperren</option>
+        </select>
       </label>
     </div>
   </details>
@@ -1646,6 +1889,13 @@
     document.getElementById('pd-vol-fac').value     = cfg.volume_factor ?? 1.2;
     document.getElementById('pd-ptp-on').checked    = !!cfg.partial_tp;
     document.getElementById('pd-ptp-pct').value     = cfg.partial_tp_fraction ?? 50;
+    document.getElementById('pd-sent-buy-on').checked   = !!cfg.sentiment_buy_enabled;
+    document.getElementById('pd-sent-buy-min').value    = cfg.sentiment_buy_min ?? 0.1;
+    document.getElementById('pd-sent-sell-on').checked  = !!cfg.sentiment_sell_enabled;
+    document.getElementById('pd-sent-sell-max').value   = cfg.sentiment_sell_max ?? -0.3;
+    document.getElementById('pd-sent-sell-mode').value  = cfg.sentiment_sell_mode ?? 'block';
+    document.getElementById('pd-sent-stop-on').checked  = !!cfg.sentiment_stop_enabled;
+    document.getElementById('pd-sent-stop-thr').value   = cfg.sentiment_stop_threshold ?? -0.5;
     const btn2 = document.getElementById('pd-save-btn');
     btn2.textContent = 'Übernehmen';
     btn2.disabled = false;
@@ -1672,8 +1922,15 @@
       breakeven_pct:       parseFloat(document.getElementById('pd-be-pct').value),
       volume_filter:       document.getElementById('pd-vol-on').checked,
       volume_factor:       parseFloat(document.getElementById('pd-vol-fac').value),
-      partial_tp:          document.getElementById('pd-ptp-on').checked,
-      partial_tp_fraction: parseFloat(document.getElementById('pd-ptp-pct').value),
+      partial_tp:               document.getElementById('pd-ptp-on').checked,
+      partial_tp_fraction:      parseFloat(document.getElementById('pd-ptp-pct').value),
+      sentiment_buy_enabled:    document.getElementById('pd-sent-buy-on').checked,
+      sentiment_buy_min:        parseFloat(document.getElementById('pd-sent-buy-min').value),
+      sentiment_sell_enabled:   document.getElementById('pd-sent-sell-on').checked,
+      sentiment_sell_max:       parseFloat(document.getElementById('pd-sent-sell-max').value),
+      sentiment_sell_mode:      document.getElementById('pd-sent-sell-mode').value,
+      sentiment_stop_enabled:   document.getElementById('pd-sent-stop-on').checked,
+      sentiment_stop_threshold: parseFloat(document.getElementById('pd-sent-stop-thr').value),
     };
     try {
       const r = await fetch('/api/bot/set_runtime_params', {

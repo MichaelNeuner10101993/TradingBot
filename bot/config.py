@@ -67,6 +67,14 @@ class RiskConfig:
     partial_tp_fraction: float = 0.50   # 50% verkaufen, 50% als Remainder weiterführen
     # Auto-Cleanup: alte orders/errors-Einträge regelmäßig löschen (trades nie)
     cleanup_days: int = 30
+    # Sentiment-Filter (News-Agent → Supervisor → bot_state)
+    sentiment_buy_enabled:    bool  = False   # BUY nur wenn Score ≥ sentiment_buy_min
+    sentiment_buy_min:        float = 0.1     # Mindestscore für BUY
+    sentiment_sell_enabled:   bool  = False   # Reaktion wenn Score < sentiment_sell_max
+    sentiment_sell_max:       float = -0.3    # Trigger-Schwelle für SELL-Reaktion
+    sentiment_sell_mode:      str   = "block" # "block" | "close" | "both"
+    sentiment_stop_enabled:   bool  = False   # Bot pausieren wenn Score < sentiment_stop_threshold
+    sentiment_stop_threshold: float = -0.5    # Stopp-Schwelle
 
 
 @dataclass

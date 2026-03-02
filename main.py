@@ -183,8 +183,15 @@ def main():
                     ("pending_volume_factor",       risk_cfg, "volume_factor",         float),
                     ("pending_partial_tp",          risk_cfg, "partial_tp_enabled",    lambda v: v.lower() == "true"),
                     ("pending_partial_tp_fraction", risk_cfg, "partial_tp_fraction",   float),
-                    ("pending_fast_period",         bot_cfg,  "fast_period",           int),
-                    ("pending_slow_period",         bot_cfg,  "slow_period",           int),
+                    ("pending_fast_period",              bot_cfg,  "fast_period",            int),
+                    ("pending_slow_period",              bot_cfg,  "slow_period",            int),
+                    ("pending_sentiment_buy_enabled",    risk_cfg, "sentiment_buy_enabled",    lambda v: v.lower() == "true"),
+                    ("pending_sentiment_buy_min",        risk_cfg, "sentiment_buy_min",        float),
+                    ("pending_sentiment_sell_enabled",   risk_cfg, "sentiment_sell_enabled",   lambda v: v.lower() == "true"),
+                    ("pending_sentiment_sell_max",       risk_cfg, "sentiment_sell_max",       float),
+                    ("pending_sentiment_sell_mode",      risk_cfg, "sentiment_sell_mode",      str),
+                    ("pending_sentiment_stop_enabled",   risk_cfg, "sentiment_stop_enabled",   lambda v: v.lower() == "true"),
+                    ("pending_sentiment_stop_threshold", risk_cfg, "sentiment_stop_threshold", float),
                 ]:
                     _v = _sv.get(_ok, "")
                     if _v:
@@ -292,6 +299,56 @@ def main():
                 if signal == "BUY" and _sv.get("supervisor_regime") == "BEAR":
                     log.info("BEAR-Regime: BUY → HOLD (Abwärtstrend erkannt, kein neuer Kauf)")
                     signal = "HOLD"
+
+                # --- Sentiment-Filter ---
+                _s_score_raw = _sv.get("current_sentiment_score", "")
+                _s_score = float(_s_score_raw) if _s_score_raw else None
+
+                # Auto-Stop: Bot pausieren wenn Score zu negativ
+                if (not _paused
+                        and _s_score is not None
+                        and risk_cfg.sentiment_stop_enabled
+                        and _s_score < risk_cfg.sentiment_stop_threshold):
+                    db.set_state("paused", "true")
+                    _paused = True
+                    log.critical(
+                        f"Sentiment-Auto-Stop: Score {_s_score:+.3f} < "
+                        f"Schwelle {risk_cfg.sentiment_stop_threshold:+.3f} – Handel pausiert"
+                    )
+                    notify.send_telegram(
+                        f"⛔ {bot_cfg.symbol}: Sentiment-Auto-Stop "
+                        f"(Score {_s_score:+.3f} < {risk_cfg.sentiment_stop_threshold:+.3f})"
+                    )
+
+                # SELL-Trigger: Score unter Schwelle → je nach Modus reagieren
+                if (_s_score is not None
+                        and risk_cfg.sentiment_sell_enabled
+                        and _s_score < risk_cfg.sentiment_sell_max):
+                    mode = risk_cfg.sentiment_sell_mode
+                    if mode in ("close", "both") and signal != "SELL":
+                        log.info(
+                            f"Sentiment-SELL: Score {_s_score:+.3f} < "
+                            f"{risk_cfg.sentiment_sell_max:+.3f} → SELL (Modus: {mode})"
+                        )
+                        signal = "SELL"
+                    elif mode == "block" and signal == "BUY":
+                        log.info(
+                            f"Sentiment blockiert BUY: Score {_s_score:+.3f} < "
+                            f"{risk_cfg.sentiment_sell_max:+.3f} → HOLD"
+                        )
+                        signal = "HOLD"
+
+                # BUY-Gate: Score unter Mindestschwelle → kein BUY
+                if (signal == "BUY"
+                        and _s_score is not None
+                        and risk_cfg.sentiment_buy_enabled
+                        and _s_score < risk_cfg.sentiment_buy_min):
+                    log.info(
+                        f"Sentiment-Gate: BUY → HOLD "
+                        f"(Score {_s_score:+.3f} < Min {risk_cfg.sentiment_buy_min:+.3f})"
+                    )
+                    signal = "HOLD"
+                # --- Ende Sentiment-Filter ---
 
                 # Force-Signal vom Telegram / Dashboard? (überschreibt berechnetes Signal)
                 _force = _sv.get("force_signal", "")
@@ -477,6 +534,13 @@ def main():
                 db.set_state("htf_timeframe",          bot_cfg.htf_timeframe)
                 db.set_state("htf_fast",               str(bot_cfg.htf_fast))
                 db.set_state("htf_slow",               str(bot_cfg.htf_slow))
+                db.set_state("sentiment_buy_enabled",    str(risk_cfg.sentiment_buy_enabled))
+                db.set_state("sentiment_buy_min",        str(risk_cfg.sentiment_buy_min))
+                db.set_state("sentiment_sell_enabled",   str(risk_cfg.sentiment_sell_enabled))
+                db.set_state("sentiment_sell_max",       str(risk_cfg.sentiment_sell_max))
+                db.set_state("sentiment_sell_mode",      risk_cfg.sentiment_sell_mode)
+                db.set_state("sentiment_stop_enabled",   str(risk_cfg.sentiment_stop_enabled))
+                db.set_state("sentiment_stop_threshold", str(risk_cfg.sentiment_stop_threshold))
                 db.set_state("status",                 "paused" if _paused else "running")
 
                 # Feature 4: Täglicher Cleanup (orders + errors älter als cleanup_days)
