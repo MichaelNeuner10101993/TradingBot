@@ -125,6 +125,24 @@ def send_pyramid_buy(
     _send_sync(text)
 
 
+def send_drawdown_alert(symbol: str, drawdown_pct: float, is_stop: bool):
+    """Drawdown-Warnung (≥10%) oder -Stopp (≥15%) per Telegram."""
+    if is_stop:
+        text = (
+            f"🚨 <b>DRAWDOWN-STOPP: {symbol}</b>\n"
+            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> ≥ 15%\n"
+            f"Handel automatisch pausiert.\n"
+            f"Fortsetzen via Dashboard oder /start_bot {symbol.replace('/', '_')}"
+        )
+    else:
+        text = (
+            f"⚠️ <b>DRAWDOWN-WARNUNG: {symbol}</b>\n"
+            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> ≥ 10%\n"
+            f"Position-Sizing auf 50% reduziert bis zur Erholung."
+        )
+    _send_sync(text)
+
+
 def send_supervisor_recommendation(
     symbol: str,
     best: dict,

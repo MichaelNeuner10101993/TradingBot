@@ -247,11 +247,51 @@ def main():
                 )
                 rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
 
+                # --- Drawdown-Schutz ---
+                _total_value = balance['quote'] + balance['base'] * last_price
+                _peak_str    = db.get_state("peak_balance", "")
+                _peak_bal    = float(_peak_str) if _peak_str else _total_value
+                if _total_value > _peak_bal:
+                    _peak_bal = _total_value
+                    db.set_state("peak_balance", str(_peak_bal))
+                _drawdown_pct    = (_peak_bal - _total_value) / _peak_bal if _peak_bal > 0 else 0.0
+                _drawdown_reduce = False
+                _dd_level        = db.get_state("drawdown_alert_level", "0")
+                if _drawdown_pct >= 0.15:
+                    if not _paused:
+                        db.set_state("paused", "true")
+                        _paused = True
+                        log.critical(
+                            f"DRAWDOWN-STOPP: {_drawdown_pct * 100:.1f}% >= 15% – "
+                            f"Handel automatisch pausiert"
+                        )
+                    if _dd_level != "15":
+                        notify.send_drawdown_alert(bot_cfg.symbol, _drawdown_pct, True)
+                        db.set_state("drawdown_alert_level", "15")
+                elif _drawdown_pct >= 0.10:
+                    _drawdown_reduce = True
+                    log.warning(
+                        f"DRAWDOWN-WARNUNG: {_drawdown_pct * 100:.1f}% >= 10% – "
+                        f"Position-Sizing auf 50% reduziert"
+                    )
+                    if _dd_level not in ("10", "15"):
+                        notify.send_drawdown_alert(bot_cfg.symbol, _drawdown_pct, False)
+                        db.set_state("drawdown_alert_level", "10")
+                else:
+                    if _dd_level != "0":
+                        db.set_state("drawdown_alert_level", "0")  # Reset nach Erholung
+                # --- Ende Drawdown-Schutz ---
+
                 # Feature 3: HTF-Trend-Filter (BUY nur wenn höherer Timeframe bullish)
                 if signal == "BUY" and candles_htf is not None:
                     if not is_htf_bullish(candles_htf, bot_cfg.htf_fast, bot_cfg.htf_slow):
                         log.info(f"HTF-Filter ({bot_cfg.htf_timeframe}): BUY → HOLD")
                         signal = "HOLD"
+
+                # BEAR-Regime: BUY unterdrücken (Trend läuft gegen uns)
+                if signal == "BUY" and _sv.get("supervisor_regime") == "BEAR":
+                    log.info("BEAR-Regime: BUY → HOLD (Abwärtstrend erkannt, kein neuer Kauf)")
+                    signal = "HOLD"
 
                 # Force-Signal vom Telegram / Dashboard? (überschreibt berechnetes Signal)
                 _force = _sv.get("force_signal", "")
@@ -390,7 +430,14 @@ def main():
                                 log.info(f"SL-Cooldown aktiv: {int(cooldown_sec - elapsed)}s verbleibend")
 
                     if signal == "BUY":
-                        executor.buy(risk.calc_buy_amount(balance, last_price, exchange), last_price, candles)
+                        _buy_amount = risk.calc_buy_amount(balance, last_price, exchange)
+                        if _drawdown_reduce:
+                            _buy_amount *= 0.5
+                            log.warning(
+                                f"Position-Sizing: 50% wegen Drawdown "
+                                f"{_drawdown_pct * 100:.1f}%"
+                            )
+                        executor.buy(_buy_amount, last_price, candles)
                     elif signal == "SELL":
                         executor.sell(risk.calc_sell_amount(balance), last_price)
                         notify.send_trade_sell(

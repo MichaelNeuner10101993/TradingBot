@@ -38,8 +38,9 @@ bot/
 ├── bot/
 │   ├── config.py            # Alle Konfigurationsparameter (dataclasses)
 │   ├── data_feed.py         # Marktdaten via CCXT (OHLCV, Balance, Orders)
+│   ├── indicators.py        # numpy-Indikator-Library (RSI/EMA/ATR/ADX/BB/VWAP/MACD)
 │   ├── strategy.py          # SMA-Crossover + RSI-Filter + ATR + HTF-Filter
-│   ├── regime.py            # ADX-basierte Regime-Erkennung (TREND/SIDEWAYS/VOLATILE)
+│   ├── regime.py            # 5-Regime-Erkennung (BULL/BEAR/SIDEWAYS/VOLATILE/EXTREME)
 │   ├── risk.py              # Dynamisches Position Sizing
 │   ├── execution.py         # Order-Submit, Dry-Run, Post-Trade-Verify
 │   ├── sl_tp.py             # Stop-Loss / Take-Profit Monitor (ATR-basiert)
@@ -57,7 +58,7 @@ bot/
 │
 ├── web/
 │   ├── app.py               # Flask Dashboard (Port 5001)
-│   └── templates/index.html # Dark-Theme UI, Multi-Bot, Live-Refresh
+│   └── templates/index.html # Dark-Theme UI, Logo, Hover-Tooltips, Live-Refresh
 │
 ├── db/                      # SQLite-DBs (eine pro Bot + news.db)
 ├── db/archive/              # Archivierte DBs gelöschter Bots
@@ -125,6 +126,8 @@ SMA-Crossover (BUY / SELL / HOLD)
     │
     ▼  ← SL-Cooldown (blockiert Käufe kurz nach einem Stop-Loss)
     │
+    ▼  ← Fee-Gate (kein Trade wenn TP-Abstand < 1.5× Roundtrip-Gebühr, ~0.78%)
+    │
     ▼
 ORDER
     │
@@ -133,6 +136,8 @@ ORDER
     ▼  ← Breakeven-SL (SL auf Entry heben sobald genug Gewinn)
     │
     ▼  ← Partial-TP (bei erstem TP-Hit nur Teil verkaufen, Rest läuft weiter)
+    │
+    ▼  ← Drawdown-Stopp (≥10%: Position-Sizing halbiert; ≥15%: alle Käufe pausiert)
 ```
 
 ---
@@ -176,7 +181,7 @@ SELL wird blockiert wenn RSI < rsi_sell_min (Standard: 35 – überverkauft)
 - **35 (Standard):** Standard-Schwelle.
 - **45–50:** Aggressiv – verkauft auch bei neutralem RSI.
 
-> Der RSI-Filter kann **nicht direkt** per CLI gesetzt werden. Der Supervisor passt ihn automatisch je nach Regime an (TREND: breiter; SIDEWAYS: enger; VOLATILE: sehr eng).
+> Der RSI-Filter kann **nicht direkt** per CLI gesetzt werden. Der Supervisor passt ihn automatisch je nach Regime an — siehe Regime-Erkennung unten.
 
 ---
 
@@ -205,7 +210,7 @@ TP = entry + atr_tp_mult × ATR(14)
 - **2.5 (Standard):** Ausgewogen. Risk:Reward = 2.5/1.5 ≈ 1.67:1.
 - **3.0–5.0:** Wartet auf große Bewegungen – gut in starken Trendbewegungen (VOLATILE-Regime), aber TP wird seltener erreicht.
 
-> Supervisor passt beide Multiplikatoren automatisch je nach Regime an (TREND: 1.5/2.5; SIDEWAYS: 1.2/1.8; VOLATILE: 2.0/3.5).
+> Supervisor passt beide Multiplikatoren automatisch je nach Regime an — siehe Regime-Erkennung unten.
 
 ---
 
@@ -391,37 +396,39 @@ Je mehr Bots aktiv sind, desto kleiner jede einzelne Position.
 ## Supervisor – Marktregime-Erkennung
 
 Der Supervisor läuft als separater Prozess und analysiert alle 5 Minuten
-das Marktregime jedes Coins via **ADX** (Trendstärke) und **relative ATR** (Volatilität).
+das Marktregime jedes Coins via **7 Indikatoren** (numpy-basiert).
 Die Bots übernehmen die angepassten Parameter beim nächsten Loop-Durchlauf **ohne Neustart**.
 
-### Regime-Klassifikation
+### Regime-Klassifikation (5 Regimes, Priorität von oben)
 
-| Regime | Bedingung | RSI-Fenster | SL-Mult | TP-Mult |
-|--------|-----------|-------------|---------|---------|
-| **TREND** | ADX > 22, ATR% ≤ 3% | buy < 68, sell > 32 | 1.5× | 2.5× |
-| **SIDEWAYS** | ADX ≤ 22, ATR% ≤ 3% | buy < 60, sell > 40 | 1.2× | 1.8× |
-| **VOLATILE** | ATR% > 3% | buy < 55, sell > 45 | 2.0× | 3.5× |
+| Regime | Bedingung | RSI-Fenster | SL-Mult | TP-Mult | BUY |
+|--------|-----------|-------------|---------|---------|-----|
+| **EXTREME** | RSI < 25 oder RSI > 75 | buy < 30, sell > 70 | 1.2× | 2.0× | Nur Gegenpositionen |
+| **VOLATILE** | ATR% > 3% oder BB-Width > 4% | buy < 55, sell > 45 | 2.0× | 3.5× | Selektiv |
+| **BULL** | ADX > 22, EMA50 > EMA200 (+0.5%) | buy < 68, sell > 32 | 1.5× | 2.5× | ✅ Normal |
+| **BEAR** | ADX > 22, EMA50 < EMA200 (−0.5%) | buy < 45, sell > 30 | 2.0× | 3.0× | ❌ Unterdrückt |
+| **SIDEWAYS** | ADX < 22, kein klarer Trend | buy < 60, sell > 40 | 1.2× | 1.8× | Enger RSI |
 
-**Wann welches Regime vorteilhaft ist:**
-- **TREND:** Der Bot nutzt breitere RSI-Fenster und mittlere SL/TP-Multiplikatoren – lässt Trends laufen.
-- **SIDEWAYS:** Engere RSI-Grenzen verhindern Fehlsignale in choppy Märkten; schnellere Gewinnmitnahme.
-- **VOLATILE:** Sehr enge RSI-Fenster (nur starke Signale), weite SL/TP um normale Ausschläge zu überstehen.
+**Indikatoren:** ADX · EMA50/200 · ATR% · BB-Width · RSI(14) — alle via `bot/indicators.py` (numpy, Wilder's Smoothing)
 
-### Multi-Varianten-Optimierung (72 Varianten)
+### Multi-Varianten-Optimierung (bis zu 90 Varianten)
 
-Pro Supervisor-Durchlauf werden **72 Varianten** getestet:
+Pro Supervisor-Durchlauf werden Varianten getestet:
 
 ```
-3 RSI/ATR-Kombos × 6 SMA-Varianten × 4 Feature-Kombos = 72 Varianten
+5 RSI/ATR-Kombos × 6 SMA-Varianten × 4 Feature-Kombos = bis zu 120 Varianten
+(nach MIN_TRADES-Filter und SQN-Sortierung)
 ```
 
 **RSI/ATR-Kombos pro Regime** (Supervisor wählt die beste):
 
 | Regime | RSI Buy / Sell | ATR SL-Mult | ATR TP-Mult |
 |--------|---------------|-------------|-------------|
-| TREND (3 Kombos) | 65/35 · 68/32 · 72/28 | 1.2 · 1.5 · 2.0 | 2.0 · 2.5 · 3.0 |
+| BULL (3 Kombos) | 65/35 · 68/32 · 72/28 | 1.2 · 1.5 · 2.0 | 2.0 · 2.5 · 3.0 |
+| BEAR (3 Kombos) | 40/30 · 45/30 · 50/35 | 1.8 · 2.0 · 1.5 | 2.5 · 3.0 · 2.8 |
 | SIDEWAYS (3 Kombos) | 57/43 · 60/40 · 63/37 | 1.0 · 1.2 · 1.5 | 1.5 · 1.8 · 2.2 |
 | VOLATILE (3 Kombos) | 52/48 · 55/45 · 58/42 | 1.8 · 2.0 · 2.5 | 3.0 · 3.5 · 4.0 |
+| EXTREME (3 Kombos) | 28/72 · 30/70 · 35/65 | 1.0 · 1.2 · 1.5 | 1.8 · 2.0 · 2.5 |
 
 **Feature-Kombos** (× 6 SMA × 3 RSI/ATR = 72):
 

@@ -111,8 +111,8 @@ def parse_args():
                    help="Log-Verzeichnis")
     p.add_argument("--timeframe", default="5m",
                    help="Candle-Timeframe für Regime-Analyse (default: 5m)")
-    p.add_argument("--candles",   type=int,   default=100,
-                   help="Anzahl Candles für ADX/ATR-Berechnung (default: 100, min: 30)")
+    p.add_argument("--candles",   type=int,   default=250,
+                   help="Anzahl Candles für Regime-Erkennung (default: 250, min: 30; ≥210 für EMA200)")
     p.add_argument("--dry-run",   action="store_true",
                    help="Nicht in DB schreiben, nur loggen")
     return p.parse_args()

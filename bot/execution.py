@@ -13,6 +13,10 @@ from bot import notify
 
 log = logging.getLogger("tradingbot.execution")
 
+# Fee-Gate Konstanten (Kraken: 0.26% Taker-Fee pro Order, 0.52% Roundtrip)
+_MIN_STOP_DIST_PCT = 0.40  # mind. 0.40% SL-Abstand
+_MIN_TP_GROSS_PCT  = 0.78  # mind. 0.78% TP-Abstand (≈ 1.5× Roundtrip-Fee)
+
 
 def _make_client_id() -> str:
     """Eindeutige Client-Order-ID für Idempotenz."""
@@ -49,6 +53,27 @@ class Executor:
             log.debug(f"Minimum-Prüfung übersprungen: {e}")
         return True, "ok"
 
+    def _fee_gate(self, sl_price: float, tp_price: float, entry_price: float) -> tuple[bool, str]:
+        """
+        Prüft ob der Trade nach Gebühren noch profitabel sein kann.
+        SL-Abstand muss >= _MIN_STOP_DIST_PCT%, TP-Abstand >= _MIN_TP_GROSS_PCT%.
+        """
+        if entry_price <= 0:
+            return True, "ok"
+        stop_dist_pct = abs(entry_price - sl_price) / entry_price * 100
+        tp_gross_pct  = abs(tp_price   - entry_price) / entry_price * 100
+        if stop_dist_pct < _MIN_STOP_DIST_PCT:
+            return False, (
+                f"FEE_GATE: Trade abgelehnt | SL-Abstand {stop_dist_pct:.2f}% "
+                f"< {_MIN_STOP_DIST_PCT}% Minimum"
+            )
+        if tp_gross_pct < _MIN_TP_GROSS_PCT:
+            return False, (
+                f"FEE_GATE: Trade abgelehnt | TP-Abstand {tp_gross_pct:.2f}% "
+                f"< {_MIN_TP_GROSS_PCT}% Minimum (< 1.5× Roundtrip-Fee)"
+            )
+        return True, "ok"
+
     @retry_backoff(retries=2, base_delay=3.0, exceptions=(ccxt.NetworkError,))
     def _submit_order(self, side: str, amount: float) -> dict:
         if side == "buy":
@@ -82,6 +107,13 @@ class Executor:
         ok, reason = self._meets_exchange_minimum(amount, last_price)
         if not ok:
             log.warning(f"BUY abgebrochen: {reason}")
+            return None
+
+        # Fee-Gate: SL/TP-Level schätzen, prüfen ob Trade nach Gebühren noch profitabel
+        _sl_est, _tp_est = calc_levels(last_price, self.risk_cfg, candles)
+        ok_fee, fee_reason = self._fee_gate(_sl_est, _tp_est, last_price)
+        if not ok_fee:
+            log.warning(fee_reason)
             return None
 
         client_id = _make_client_id()

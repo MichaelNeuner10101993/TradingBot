@@ -1,9 +1,24 @@
 """
 Strategy Engine: erzeugt Signale (BUY / SELL / HOLD) aus OHLCV-Daten.
-Enthält: SMA-Crossover, RSI-Filter, ATR-Berechnung.
+Indikatoren kommen aus bot.indicators (numpy, Wilder's EMA-Smoothing).
+
+Öffentliche API (rückwärtskompatibel):
+  sma(values, n) → float | None
+  rsi(closes, period) → float | None          ← jetzt Wilder's Smoothing
+  atr(candles, period) → float | None         ← jetzt Wilder's Smoothing
+  sma_crossover(closes, fast, slow) → Signal
+  get_signal(candles, ...) → (Signal, price, rsi_val)
+  is_htf_bullish(candles, fast, slow) → bool
 """
 import logging
+import numpy as np
 from typing import Literal
+
+from bot.indicators import (
+    sma  as _sma_arr,
+    rsi_current  as _rsi_current,
+    atr_current  as _atr_current,
+)
 
 log = logging.getLogger("tradingbot.strategy")
 
@@ -11,39 +26,27 @@ Signal = Literal["BUY", "SELL", "HOLD"]
 
 
 def sma(values: list[float], n: int) -> float | None:
-    if len(values) < n:
-        return None
-    return sum(values[-n:]) / n
+    """SMA-Wrapper: gibt letzten gültigen Wert zurück oder None."""
+    arr   = _sma_arr(np.asarray(values, dtype=float), n)
+    valid = arr[~np.isnan(arr)]
+    return float(valid[-1]) if len(valid) > 0 else None
 
 
 def rsi(closes: list[float], period: int = 14) -> float | None:
-    """Relative Strength Index (Wilder-Methode, vereinfacht als Simple-Average)."""
-    if len(closes) < period + 1:
-        return None
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    recent = deltas[-period:]
-    gains  = [d for d in recent if d > 0]
-    losses = [-d for d in recent if d < 0]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+    """Relative Strength Index (Wilder's EMA-Smoothing). None wenn nicht genug Daten."""
+    result = _rsi_current(np.asarray(closes, dtype=float), period)
+    return None if np.isnan(result) else result
 
 
 def atr(candles: list[list], period: int = 14) -> float | None:
     """Average True Range aus OHLCV-Candles [ts, open, high, low, close, vol]."""
     if len(candles) < period + 1:
         return None
-    trs = []
-    for i in range(1, len(candles)):
-        high       = candles[i][2]
-        low        = candles[i][3]
-        prev_close = candles[i - 1][4]
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        trs.append(tr)
-    return sum(trs[-period:]) / period
+    highs  = np.asarray([c[2] for c in candles], dtype=float)
+    lows   = np.asarray([c[3] for c in candles], dtype=float)
+    closes = np.asarray([c[4] for c in candles], dtype=float)
+    result = _atr_current(highs, lows, closes, period)
+    return None if np.isnan(result) else result
 
 
 def is_htf_bullish(candles: list[list], fast: int, slow: int) -> bool:
@@ -51,7 +54,11 @@ def is_htf_bullish(candles: list[list], fast: int, slow: int) -> bool:
     closes = [c[4] for c in candles]
     if len(closes) < slow:
         return True
-    return sum(closes[-fast:]) / fast >= sum(closes[-slow:]) / slow
+    f = sma(closes, fast)
+    s = sma(closes, slow)
+    if f is None or s is None:
+        return True
+    return f >= s
 
 
 def sma_crossover(closes: list[float], fast: int, slow: int) -> Signal:
@@ -63,15 +70,14 @@ def sma_crossover(closes: list[float], fast: int, slow: int) -> Signal:
         log.debug("Zu wenig Candles für Signal")
         return "HOLD"
 
-    prev = closes[:-1]
-    curr = closes
+    arr      = np.asarray(closes, dtype=float)
+    fast_arr = _sma_arr(arr, fast)
+    slow_arr = _sma_arr(arr, slow)
 
-    f_prev = sma(prev, fast)
-    s_prev = sma(prev, slow)
-    f_curr = sma(curr, fast)
-    s_curr = sma(curr, slow)
+    f_prev, f_curr = fast_arr[-2], fast_arr[-1]
+    s_prev, s_curr = slow_arr[-2], slow_arr[-1]
 
-    if None in (f_prev, s_prev, f_curr, s_curr):
+    if any(np.isnan(x) for x in (f_prev, s_prev, f_curr, s_curr)):
         return "HOLD"
 
     if f_prev <= s_prev and f_curr > s_curr:

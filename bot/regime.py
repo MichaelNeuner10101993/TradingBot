@@ -1,21 +1,37 @@
 """
-Marktregime-Erkennung via ADX + relative ATR.
+Marktregime-Erkennung via ADX + EMA50/200 + BB-Width + RSI.
 
-Klassifiziert den Markt als TREND / SIDEWAYS / VOLATILE
-und liefert passende Strategie-Parameter pro Regime.
+5 Regimes:
+  BULL     — ADX > 22, EMA50 > EMA200 um ≥ 0.5%  → Aufwärtstrend bestätigt
+  BEAR     — ADX > 22, EMA50 < EMA200 um ≥ 0.5%  → Abwärtstrend (BUY selektiv)
+  SIDEWAYS — ADX < 22, BB-Width < Schwelle        → Range, kein klarer Trend
+  VOLATILE — ATR% > 3% oder BB-Width > 4%         → Hohe Volatilität
+  EXTREME  — RSI < 25 oder RSI > 75               → Extreme Überverkauft/Überkauft
+
+Prioritätsreihenfolge (höchste zuerst):
+  EXTREME → VOLATILE → (BULL | BEAR | SIDEWAYS anhand ADX + EMA-Abstand)
 """
 import logging
+import math
+import numpy as np
 
 log = logging.getLogger("tradingbot.regime")
 
-# Strategie-Parameter pro Regime
+# ─── Strategie-Parameter pro Regime ──────────────────────────────────────────
 REGIME_TEMPLATES: dict[str, dict] = {
-    "TREND": {
-        # Trend bestätigt → RSI-Filter entspannter, normales Risk/Reward
+    "BULL": {
+        # Aufwärtstrend bestätigt → RSI-Filter locker, normales Risk/Reward
         "rsi_buy_max":  68.0,
         "rsi_sell_min": 32.0,
         "atr_sl_mult":  1.5,
         "atr_tp_mult":  2.5,
+    },
+    "BEAR": {
+        # Abwärtstrend → BUY nur bei starker Überverkauftheit, weites SL
+        "rsi_buy_max":  45.0,
+        "rsi_sell_min": 30.0,
+        "atr_sl_mult":  2.0,
+        "atr_tp_mult":  3.0,
     },
     "SIDEWAYS": {
         # Kein klarer Trend → selektiverer RSI, früherer TP (Range-Ziel)
@@ -31,71 +47,30 @@ REGIME_TEMPLATES: dict[str, dict] = {
         "atr_sl_mult":  2.0,
         "atr_tp_mult":  3.5,
     },
+    "EXTREME": {
+        # Extremes RSI-Niveau → Kapitalschutz, BUY nur bei starker Überverkauftheit
+        "rsi_buy_max":  30.0,
+        "rsi_sell_min": 70.0,
+        "atr_sl_mult":  1.2,
+        "atr_tp_mult":  2.0,
+    },
+    # Legacy-Key für Rückwärtskompatibilität (ältere bot_state-Einträge / Peer-Instanzen)
+    "TREND": {
+        "rsi_buy_max":  68.0,
+        "rsi_sell_min": 32.0,
+        "atr_sl_mult":  1.5,
+        "atr_tp_mult":  2.5,
+    },
 }
 
-# Schwellwerte
-ADX_TREND_MIN    = 22.0   # ADX > 22 → Trend vorhanden
-VOLATILE_ATR_PCT = 3.0    # ATR > 3% des Preises → volatil
-
-
-def adx(candles: list[list], period: int = 14) -> float | None:
-    """
-    Average Directional Index (Wilder's DMI).
-    candles: [ts, open, high, low, close, volume]
-    Mindestbedarf: 2 × period + 1 Candles.
-    Gibt ADX-Wert (0–100) oder None zurück.
-    """
-    n = len(candles)
-    if n < 2 * period + 1:
-        log.debug(f"ADX: Zu wenig Candles ({n} < {2 * period + 1})")
-        return None
-
-    # Schritt 1: True Range, +DM, -DM
-    trs, pdms, ndms = [], [], []
-    for i in range(1, n):
-        high, low                     = candles[i][2],   candles[i][3]
-        prev_high, prev_low, prev_close = candles[i-1][2], candles[i-1][3], candles[i-1][4]
-
-        tr   = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        up   = high - prev_high
-        down = prev_low - low
-        pdm  = up   if (up   > down and up   > 0) else 0.0
-        ndm  = down if (down > up   and down > 0) else 0.0
-
-        trs.append(tr)
-        pdms.append(pdm)
-        ndms.append(ndm)
-
-    # Schritt 2: Wilder-Smoothing – Summe der ersten `period` Werte, danach gleitendes Mittel
-    def _wilder(vals: list[float]) -> list[float]:
-        smoothed = [sum(vals[:period])]
-        for v in vals[period:]:
-            smoothed.append(smoothed[-1] - smoothed[-1] / period + v)
-        return smoothed
-
-    s_tr  = _wilder(trs)
-    s_pdm = _wilder(pdms)
-    s_ndm = _wilder(ndms)
-
-    # Schritt 3: DX berechnen
-    dx_vals = []
-    for str_, spdm, sndm in zip(s_tr, s_pdm, s_ndm):
-        if str_ == 0:
-            dx_vals.append(0.0)
-            continue
-        di_plus  = 100.0 * spdm / str_
-        di_minus = 100.0 * sndm / str_
-        di_sum   = di_plus + di_minus
-        dx_vals.append(100.0 * abs(di_plus - di_minus) / di_sum if di_sum else 0.0)
-
-    # Schritt 4: ADX = Wilder-Smoothing über DX-Werte
-    if len(dx_vals) < period:
-        return None
-    adx_val = sum(dx_vals[:period]) / period
-    for dx in dx_vals[period:]:
-        adx_val = (adx_val * (period - 1) + dx) / period
-
-    return adx_val
+# ─── Schwellwerte ─────────────────────────────────────────────────────────────
+ADX_TREND_MIN      = 22.0   # ADX > 22 → Trend vorhanden
+VOLATILE_ATR_PCT   = 3.0    # ATR% > 3% → volatil
+BB_VOLATILE_WIDTH  = 4.0    # BB-Width > 4% → volatil
+EMA_BULL_THRESHOLD = +0.5   # EMA50 > EMA200 um ≥ 0.5% → BULL
+EMA_BEAR_THRESHOLD = -0.5   # EMA50 < EMA200 um ≥ 0.5% → BEAR
+RSI_EXTREME_LOW    = 25.0   # RSI < 25 → EXTREME
+RSI_EXTREME_HIGH   = 75.0   # RSI > 75 → EXTREME
 
 
 def classify_regime(
@@ -107,27 +82,97 @@ def classify_regime(
     Klassifiziert das Marktregime für einen Coin.
 
     Gibt (regime, adx_val, atr_pct) zurück:
-      regime:  "TREND" | "SIDEWAYS" | "VOLATILE"
+      regime:  "BULL" | "BEAR" | "SIDEWAYS" | "VOLATILE" | "EXTREME"
       adx_val: ADX-Wert oder -1.0 wenn nicht berechenbar
       atr_pct: ATR als Prozent des aktuellen Preises
+
+    Mindestbedarf: 30 Candles (Fallback: SIDEWAYS).
+    Für zuverlässige EMA200-Erkennung: ≥ 210 Candles empfohlen.
     """
-    from bot.strategy import atr as _calc_atr
+    from bot.indicators import (
+        adx_current    as _adx,
+        atr_current    as _atr,
+        ema_current    as _ema,
+        rsi_current    as _rsi,
+        bb_width       as _bb_width,
+    )
 
-    closes     = [c[4] for c in candles]
-    last_close = closes[-1] if closes else 1.0
-    atr_val    = _calc_atr(candles, atr_period) or 0.0
-    atr_pct    = (atr_val / last_close * 100) if last_close else 0.0
+    n = len(candles)
+    if n < 30:
+        log.debug(f"Regime: Zu wenig Candles ({n}) – Fallback SIDEWAYS")
+        return "SIDEWAYS", -1.0, 0.0
 
-    # Volatile überschreibt alles
-    if atr_pct > VOLATILE_ATR_PCT:
-        log.info(f"Regime: VOLATILE | ATR%={atr_pct:.2f}% > {VOLATILE_ATR_PCT}%")
-        return "VOLATILE", -1.0, atr_pct
+    highs  = np.asarray([c[2] for c in candles], dtype=float)
+    lows   = np.asarray([c[3] for c in candles], dtype=float)
+    closes = np.asarray([c[4] for c in candles], dtype=float)
+    last_close = float(closes[-1]) if closes[-1] > 0 else 1.0
 
-    adx_val = adx(candles, adx_period)
-    if adx_val is None:
-        log.debug("ADX nicht berechenbar – Fallback TREND")
-        return "TREND", -1.0, atr_pct
+    # ── Indikatoren berechnen ─────────────────────────────────────────────────
+    adx_val  = _adx(highs, lows, closes, adx_period)
+    atr_val  = _atr(highs, lows, closes, atr_period)
+    rsi_val  = _rsi(closes, 14)
+    bbw      = _bb_width(closes, 20, 2.0)
 
-    regime = "TREND" if adx_val > ADX_TREND_MIN else "SIDEWAYS"
-    log.info(f"Regime: {regime} | ADX={adx_val:.1f} | ATR%={atr_pct:.2f}%")
-    return regime, adx_val, atr_pct
+    # EMA50 / EMA200 mit Fallback auf kürzere Perioden bei wenig Daten
+    ema50    = _ema(closes, 50)     if n >= 60  else _ema(closes, max(10, n // 4))
+    ema200   = _ema(closes, 200)    if n >= 210 else _ema(closes, max(20, n // 2))
+
+    # NaN-Safety
+    if math.isnan(adx_val):  adx_val = 20.0
+    if math.isnan(rsi_val):  rsi_val = 50.0
+    if math.isnan(bbw):      bbw     = 2.0
+    if math.isnan(ema50):    ema50   = last_close
+    if math.isnan(ema200):   ema200  = last_close
+
+    atr_pct = (atr_val / last_close * 100) if (not math.isnan(atr_val) and last_close > 0) else 0.0
+
+    # EMA-Abstand (%) — positiv = bullish, negativ = bearish
+    ema_diff_pct = (ema50 - ema200) / ema200 * 100 if ema200 > 0 else 0.0
+
+    # ── Regime-Klassifikation (Priorität von oben nach unten) ─────────────────
+
+    # 1. EXTREME: RSI-Extremwert (höchste Priorität — Kapitalschutz)
+    if rsi_val < RSI_EXTREME_LOW or rsi_val > RSI_EXTREME_HIGH:
+        log.info(
+            f"Regime: EXTREME | RSI={rsi_val:.1f} | ADX={adx_val:.1f} "
+            f"| EMA-Δ={ema_diff_pct:+.2f}% | ATR%={atr_pct:.2f}%"
+        )
+        return "EXTREME", adx_val, atr_pct
+
+    # 2. VOLATILE: Hohe Volatilität überschreibt Trendrichtung
+    if atr_pct > VOLATILE_ATR_PCT or bbw > BB_VOLATILE_WIDTH:
+        log.info(
+            f"Regime: VOLATILE | ATR%={atr_pct:.2f}% BB-Width={bbw:.2f}% "
+            f"| ADX={adx_val:.1f} | EMA-Δ={ema_diff_pct:+.2f}%"
+        )
+        return "VOLATILE", adx_val, atr_pct
+
+    # 3. SIDEWAYS: Kein klarer Trend
+    if adx_val < ADX_TREND_MIN:
+        log.info(
+            f"Regime: SIDEWAYS | ADX={adx_val:.1f} < {ADX_TREND_MIN} "
+            f"| BB-Width={bbw:.2f}% | ATR%={atr_pct:.2f}%"
+        )
+        return "SIDEWAYS", adx_val, atr_pct
+
+    # 4. Trend vorhanden → BULL vs BEAR anhand EMA50/200-Abstand
+    if ema_diff_pct >= EMA_BULL_THRESHOLD:
+        log.info(
+            f"Regime: BULL | ADX={adx_val:.1f} | EMA-Δ={ema_diff_pct:+.2f}% "
+            f"(≥+{EMA_BULL_THRESHOLD}%) | ATR%={atr_pct:.2f}%"
+        )
+        return "BULL", adx_val, atr_pct
+
+    if ema_diff_pct <= EMA_BEAR_THRESHOLD:
+        log.info(
+            f"Regime: BEAR | ADX={adx_val:.1f} | EMA-Δ={ema_diff_pct:+.2f}% "
+            f"(≤{EMA_BEAR_THRESHOLD}%) | ATR%={atr_pct:.2f}%"
+        )
+        return "BEAR", adx_val, atr_pct
+
+    # 5. ADX > Schwelle aber EMA50 ≈ EMA200 (Übergangsbereich) → SIDEWAYS
+    log.info(
+        f"Regime: SIDEWAYS (EMA-Übergang) | ADX={adx_val:.1f} "
+        f"| EMA-Δ={ema_diff_pct:+.2f}% | ATR%={atr_pct:.2f}%"
+    )
+    return "SIDEWAYS", adx_val, atr_pct

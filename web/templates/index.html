@@ -8,24 +8,57 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --bg-main:    #0d1117;
+      --bg-card:    #161b22;
+      --bg-hover:   #1c2128;
+      --border:     #21262d;
+      --border-hi:  #30363d;
+      --text-hi:    #e6edf3;
+      --text-mid:   #c9d1d9;
+      --text-low:   #8b949e;
+      --text-mute:  #484f58;
+      --accent:     #58a6ff;
+      --green:      #3fb950;
+      --red:        #f85149;
+      --yellow:     #d29922;
+    }
+
     body {
-      font-family: 'Courier New', monospace;
-      background: #0d1117;
-      color: #c9d1d9;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-main);
+      color: var(--text-mid);
       padding: 20px;
       font-size: 13px;
     }
+
+    /* monospace für Datenwerte */
+    .mono, code, .price, .sltp-input, dialog,
+    .market-opt, table, .bot-card .row span { font-family: 'Courier New', monospace; }
 
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid #21262d;
-      padding-bottom: 12px;
-      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 14px;
+      margin-bottom: 28px;
+      gap: 16px;
     }
-    header h1 { font-size: 18px; color: #58a6ff; }
-    header .meta { font-size: 11px; color: #8b949e; text-align: right; }
+    .header-brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .header-logo {
+      width: 46px;
+      height: 46px;
+      border-radius: 10px;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 18px; color: var(--accent); font-weight: 700; }
+    header .meta { font-size: 11px; color: var(--text-low); text-align: right; }
 
     /* ── Overview Grid ─────────────────────────────────── */
     .overview {
@@ -36,22 +69,23 @@
     }
 
     .bot-card {
-      background: #161b22;
-      border: 1px solid #21262d;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 10px;
       padding: 16px;
       cursor: pointer;
-      transition: border-color .15s;
+      transition: border-color .15s, box-shadow .15s;
       text-decoration: none;
     }
-    .bot-card:hover { border-color: #58a6ff; }
+    .bot-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent)22; }
     .bot-card.error-card { border-color: #3d1a1a; }
 
     .bot-card .sym {
       font-size: 16px;
-      font-weight: bold;
-      color: #e6edf3;
+      font-weight: 700;
+      color: var(--text-hi);
       margin-bottom: 4px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
     .bot-card .sig {
       font-size: 22px;
@@ -92,10 +126,13 @@
     .badge.open    { background:#1c2d3f; color:#58a6ff; }
     .badge.signal_close { background:#21262d; color:#8b949e; }
     .badge.err     { background:#3d1a1a; color:#f85149; }
-    .badge.trend   { background:#1c2d3f; color:#58a6ff; }
-    .badge.sideways{ background:#2d2208; color:#d29922; }
-    .badge.volatile{ background:#3d1a1a; color:#f85149; }
-    .badge.noregime{ background:#21262d; color:#484f58; }
+    .badge.bull     { background:#1a2e1a; color:#3fb950; }
+    .badge.bear     { background:#3d1a1a; color:#f85149; }
+    .badge.sideways { background:#2d2208; color:#d29922; }
+    .badge.volatile { background:#3a1f00; color:#d29922; }
+    .badge.extreme  { background:#2e1a3d; color:#bf7fff; }
+    .badge.trend    { background:#1c2d3f; color:#58a6ff; }  /* legacy */
+    .badge.noregime { background:#21262d; color:#484f58; }
 
     .pnl.pos { color: #3fb950; }
     .pnl.neg { color: #f85149; }
@@ -144,6 +181,17 @@
     .collapsed .bot-section-body { display: none; }
     .chevron { color: #8b949e; transition: transform .2s; }
     .collapsed .chevron { transform: rotate(-90deg); }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-low);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 16px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
 
     footer {
       margin-top: 28px;
@@ -194,7 +242,8 @@
         margin-bottom: 16px;
       }
       header .meta { text-align: left; }
-      #port-detail { display: block; color: #8b949e; margin-top: 2px; }
+      .header-logo { width: 36px; height: 36px; }
+      #port-detail { display: block; color: var(--text-low); margin-top: 2px; }
 
       .overview { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
       .bot-card { padding: 10px; }
@@ -434,6 +483,21 @@
     }
     .tip:hover::after { opacity: 1; }
 
+    /* ── Hover-Tooltips (JS-gesteuert, kein Overflow/z-index Problem) ── */
+    .htip { cursor: help; }
+    #tt {
+      position: fixed; z-index: 99999;
+      max-width: 290px; min-width: 180px;
+      background: #161b22; border: 1px solid #3d444d;
+      color: #c9d1d9; padding: 8px 10px; border-radius: 6px;
+      font-size: 11px; line-height: 1.5; white-space: normal;
+      pointer-events: none;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-weight: normal; text-align: left;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,.5);
+    }
+
     /* ── Market-Suche Dropdown ──────────────────────────── */
     .market-wrap { position: relative; }
     .market-dd {
@@ -456,18 +520,22 @@
 <body>
 
 <header>
-  <div>
-    <h1>⬡ Trading Bots &nbsp;<span style="color:#484f58;font-size:12px">{{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</span></h1>
-    <div style="margin-top:6px;font-size:12px;color:#8b949e">
-      Portfolio:
-      <span id="port-total" style="color:#e6edf3;font-weight:bold">{{ "%.2f"|format(portfolio_total) }} EUR</span>
-      <span id="port-detail" style="color:#484f58">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
+  <div class="header-brand">
+    <img src="/static/trading_cat.png" class="header-logo" alt="Trading Cat">
+    <div>
+      <h1>Trading Bots &nbsp;<span style="color:var(--text-mute);font-size:12px;font-weight:400">{{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</span></h1>
+      <div style="margin-top:5px;font-size:12px;color:var(--text-low)">
+        Portfolio:
+        <span id="port-total" class="mono htip" style="color:var(--text-hi);font-weight:bold"
+              data-tip="Gesamtkapital: Summe aus Fiat-Guthaben und dem aktuellen Marktwert aller gehaltenen Coins ueber alle Bots. Wird alle 5s aktualisiert.">{{ "%.2f"|format(portfolio_total) }} EUR</span>
+        <span id="port-detail" class="mono" style="color:var(--text-mute)">&nbsp;({{ "%.2f"|format(portfolio_eur) }} EUR Fiat &nbsp;+&nbsp; {{ "%.2f"|format(portfolio_coins) }} EUR Coins)</span>
+      </div>
     </div>
   </div>
   <div class="meta" style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
     <div style="display:flex;align-items:center;gap:8px">
       <button id="update-btn" class="update-btn" onclick="checkUpdates()">⟳ Updates</button>
-      <span style="font-size:11px;color:#8b949e">Refresh in <span id="cd">60</span>s</span>
+      <span style="font-size:11px;color:var(--text-low)">Refresh in <span id="cd">60</span>s</span>
     </div>
   </div>
 </header>
@@ -481,16 +549,39 @@
 {% endif %}
 
 <!-- ── Overview Cards ───────────────────────────────────── -->
+<div class="section-title">📊 Bot-Übersicht</div>
 <div class="overview">
 {% for bot in bots %}
   <a class="bot-card {% if bot.get('error') %}error-card{% endif %}"
      href="#bot-{{ loop.index }}"
      data-symbol="{{ bot.symbol }}">
+    {# ── Tooltip-Texte ─────────────────────────────────── #}
+    {% set _sig_tip = {
+      'BUY':  'Kaufsignal: Fast-SMA kreuzt Slow-SMA von unten nach oben und RSI liegt unter der Kaufschwelle. Bot hat eine Long-Position eroeffnet oder wird es beim naechsten Loop tun.',
+      'SELL': 'Verkaufssignal: Fast-SMA kreuzt Slow-SMA von oben nach unten und RSI liegt ueber der Verkaufsschwelle. Offene Position wird geschlossen.',
+      'HOLD': 'Kein Crossover erkannt – Bot haelt aktuelle Position oder wartet auf ein Signal.',
+      '–':    'Noch kein Signal berechnet. Warte auf genuegend Candle-Daten.',
+    }.get(bot.signal, 'Signal wird berechnet...') %}
+    {% set _r = bot.regime %}
+    {% set _regime_tip = {
+      'BULL':     'Aufwaertstrend: EMA50 > EMA200 (+0.5%) und ADX > 22. RSI-Filter locker, normales Risk/Reward. Bestes Umfeld fuer Long-Trades.',
+      'BEAR':     'Abwaertstrend: EMA50 < EMA200 (-0.5%) und ADX > 22. BUY wird unterdrueckt – Bot wartet auf Trendwende oder handelt sehr selektiv.',
+      'SIDEWAYS': 'Seitwärtsbewegung: ADX < 22, kein klarer Trend. Range-Trading mit engem TP (1.8x ATR). RSI-Schwellen enger gefasst.',
+      'VOLATILE': 'Hohe Volatilitaet: ATR > 3% oder BB-Width > 4%. Weites SL (2x ATR), sehr selektiver RSI. Rauschen wird herausgefiltert.',
+      'EXTREME':  'Extreme RSI-Werte (< 25 oder > 75). Kapitalschutz-Modus: nur bei starker Ueberkauftheit/Ueberverkauftheit traden. Enges SL.',
+      'TREND':    'Trendmarkt (Legacy-Bezeichnung). Entspricht BULL-Einstellungen.',
+    }.get(_r, 'Marktregime wird analysiert...') %}
+
     <div class="sym">
       {{ bot.symbol }}
-      <span class="badge {{ 'dry' if bot.dry_run else 'live' }}">{{ 'DRY' if bot.dry_run else 'LIVE' }}</span>
+      <span class="badge {{ 'dry' if bot.dry_run else 'live' }} htip"
+            data-tip="{{ 'Testmodus: Keine echten Orders werden platziert. Signale und P&L werden simuliert – ideal zum Testen ohne Kapitalrisiko.' if bot.dry_run else 'Echtgeld-Modus: Bot handelt mit realem Kapital auf Kraken. Alle Orders werden tatsaechlich ausgefuehrt.' }}">
+        {{ 'DRY' if bot.dry_run else 'LIVE' }}
+      </span>
       {% set st = bot.status %}
-      <span class="badge {% if 'running' in st %}running{% elif 'error' in st %}err{% else %}stopped{% endif %}" data-role="status">
+      <span class="badge {% if 'running' in st %}running{% elif 'error' in st %}err{% else %}stopped{% endif %} htip"
+            data-role="status"
+            data-tip="{{ 'Bot laeuft aktiv: Markt wird alle 60s geprueft, Signale werden berechnet.' if 'running' in st else ('Fehler aufgetreten – Bot hat sich beendet. Details im Bot-Abschnitt unten.' if 'error' in st else 'Bot gestoppt. Kein aktives Monitoring. Starten ueber Starten-Button.') }}">
         {% if 'running' in st %}● ON{% elif 'error' in st %}⚠ ERR{% else %}■ OFF{% endif %}
       </span>
     </div>
@@ -498,51 +589,52 @@
     {% if bot.get('error') %}
       <div style="color:#f85149;font-size:12px;margin-top:8px">{{ bot.error }}</div>
     {% else %}
-      <div class="sig {{ bot.signal.lower() if bot.signal in ('BUY','SELL','HOLD') else 'dash' }}" data-role="signal">
+      <div class="sig {{ bot.signal.lower() if bot.signal in ('BUY','SELL','HOLD') else 'dash' }} htip"
+           data-role="signal" data-tip="{{ _sig_tip }}">
         {{ bot.signal }}
       </div>
-      <div class="price" data-role="price">{{ bot.last_price_fmt }} {{ bot.quote }}</div>
+      <div class="price htip" data-role="price"
+           data-tip="Aktueller Marktpreis von {{ bot.symbol }} auf Kraken (letzter OHLCV-Schlusskurs). Wird jede Minute aktualisiert.">
+        {{ bot.last_price_fmt }} {{ bot.quote }}
+      </div>
 
       <div class="row">
-        <span>{{ bot.quote }}-Balance</span>
+        <span class="htip" data-tip="Verfuegbares Fiat-Kapital ({{ bot.quote }}) auf Kraken fuer diesen Bot-Slot. Wird nach Trades und Kapital-Neuaufteilung aktualisiert.">{{ bot.quote }}-Balance</span>
         <span data-role="balance-quote">{{ bot.state.get('balance_quote','–') }} {{ bot.quote }}</span>
       </div>
       <div class="row">
-        <span>{{ bot.base }}-Balance</span>
+        <span class="htip" data-tip="Aktuell gehaltene Menge {{ bot.base }}. Wird beim Kauf befuellt, beim Verkauf/SL/TP geleert.">{{ bot.base }}-Balance</span>
         <span data-role="balance-base">{{ bot.state.get('balance_base','–') }}</span>
       </div>
       <div class="row">
-        <span>{{ bot.base }}-Wert</span>
+        <span class="htip" data-tip="Aktueller Marktwert der gehaltenen {{ bot.base }}-Menge in EUR (Menge x aktueller Kurs). Aendert sich mit dem Preis.">{{ bot.base }}-Wert</span>
         <span data-role="coin-value" style="color:#e6edf3">{{ "%.2f"|format(bot.coin_value_eur) }} EUR{% if bot.quote != 'EUR' %} <span style="color:#484f58;font-size:10px">(~{{ bot.quote }})</span>{% endif %}</span>
       </div>
       <div class="row">
-        <span>Offene Trades</span>
+        <span class="htip" data-tip="Anzahl aktiver offener Positionen. Normal: 0 (wartet) oder 1 (investiert). Mehr als 1 ist ungewoehnlich und deutet auf einen Fehler hin.">Offene Trades</span>
         <span data-role="open-trades" style="color:{% if bot.open_trades %}#58a6ff{% else %}#484f58{% endif %}">
           {{ bot.open_trades|length }}
         </span>
       </div>
       {% set _rsi = bot.state.get('rsi', '–') %}
       <div class="row">
-        <span>RSI(14)</span>
+        <span class="htip" data-tip="Relative Strength Index (14 Perioden, Wilder's EMA-Smoothing). Misst Staerke der Preisbewegung. Unter 35 = ueberverkauft (gruenes Signal). Ueber 65 = ueberkauft (rotes Signal). Bestimmt ob ein Crossover als Kauf/Verkauf-Signal gilt.">RSI(14)</span>
         <span data-role="rsi" style="color:{{ '#f85149' if _rsi not in ('–','') and _rsi|float > 65 else ('#3fb950' if _rsi not in ('–','') and _rsi|float < 35 else ('#8b949e' if _rsi not in ('–','') else '#484f58')) }}">{{ _rsi }}</span>
       </div>
       <div class="row">
-        <span>Regime</span>
-        {% set _r = bot.regime %}
-        <span data-role="regime"
-              class="badge {{ 'trend' if _r == 'TREND' else ('sideways' if _r == 'SIDEWAYS' else ('volatile' if _r == 'VOLATILE' else 'noregime')) }}">
-          {{ _r }}
-        </span>
+        <span class="htip" data-tip="Erkanntes Marktregime. Bestimmt RSI-Schwellen, ATR-Multiplikatoren und ob neue Kaeufe erlaubt sind. Wird vom Supervisor alle 5 Min. neu berechnet.">Regime</span>
+        {% set _rcls = {'BULL':'bull','BEAR':'bear','SIDEWAYS':'sideways','VOLATILE':'volatile','EXTREME':'extreme','TREND':'trend'}.get(_r, 'noregime') %}
+        <span data-role="regime" class="badge {{ _rcls }} htip" data-tip="{{ _regime_tip }}">{{ _r }}</span>
       </div>
       <div class="row">
-        <span>Strategie</span>
+        <span class="htip" data-tip="Aktive SMA-Variante (Name, Fast-Periode / Slow-Periode). Wird vom Optimizer alle 5 Min. per Backtest optimiert und kann sich waehrend des Betriebs aendern.">Strategie</span>
         <span data-role="strategy" style="color:#8b949e">
           <span data-role="strategy-name">{{ bot.strategy_name }}</span>
           <span style="color:#484f58">({{ bot.fast_period }}/{{ bot.slow_period }})</span>
         </span>
       </div>
       <div class="row">
-        <span>Sim&nbsp;P&L</span>
+        <span class="htip" data-tip="Simulierter P&L der aktuellen Strategie-Variante auf den letzten historischen Candles (Backtest). Positiv = Variante war in der Vergangenheit profitabel. Kein Garant fuer kuenftige Performance.">Sim&nbsp;P&L</span>
         {% set _sp = bot.sim_pnl %}
         <span data-role="sim-pnl"
               style="color:{{ '#3fb950' if _sp not in ('–','') and _sp|float > 0 else ('#f85149' if _sp not in ('–','') and _sp|float < 0 else '#484f58') }}">
@@ -552,23 +644,23 @@
       {% if bot.open_trades %}
       <div style="border-top:1px solid #21262d;margin-top:8px;padding-top:8px">
         <div class="row">
-          <span>P&L jetzt</span>
+          <span class="htip" data-tip="Unrealisierter Gewinn/Verlust der offenen Position zum aktuellen Marktpreis, nach Abzug der Kraken-Gebuehren (0.26% Taker je Seite = 0.52% Roundtrip).">P&L jetzt</span>
           <span data-role="pnl-now" class="pnl {{ 'pos' if bot.total_pnl_eur >= 0 else 'neg' }}">
             {{ "%+.2f"|format(bot.total_pnl_eur) }} {{ bot.quote }}
           </span>
         </div>
         <div class="row">
-          <span>P&L bei TP</span>
+          <span class="htip" data-tip="Erwarteter Nettogewinn wenn der Take-Profit-Kurs erreicht wird. Bereits Kraken-Gebuehren abgezogen.">P&L bei TP</span>
           <span style="color:#3fb950">+{{ "%.2f"|format(bot.total_expect_profit_eur) }} {{ bot.quote }}</span>
         </div>
         <div class="row">
-          <span>P&L bei SL</span>
+          <span class="htip" data-tip="Erwarteter Nettoverlust wenn der Stop-Loss-Kurs erreicht wird. Bereits Kraken-Gebuehren abgezogen.">P&L bei SL</span>
           <span style="color:#f85149">-{{ "%.2f"|format(bot.total_expect_loss_eur) }} {{ bot.quote }}</span>
         </div>
       </div>
       {% endif %}
       <div class="row" style="margin-top:6px">
-        <span>Aktualisiert</span>
+        <span class="htip" data-tip="Zeitpunkt der letzten erfolgreichen Datenaktualisierung. Bei langen Pausen: Bot koennte gestoppt oder die Exchange nicht erreichbar sein.">Aktualisiert</span>
         <span data-role="ago">vor {{ bot.ago }}</span>
       </div>
     {% endif %}
@@ -585,7 +677,7 @@
     <span class="chevron">▼</span>
     <span>📦 Bestände</span>
   </div>
-  <div class="section-body" style="overflow-x:auto">
+  <div class="bot-section-body" style="overflow-x:auto">
     <div id="holdings-loading" style="color:#8b949e;padding:1rem 0">Lade…</div>
     <table id="holdings-table" class="trade-table" style="display:none;width:100%">
       <thead>
@@ -606,42 +698,58 @@
 </div>
 
 <!-- ── Per-Bot Detail Sections ──────────────────────────── -->
+{% if bots %}<div class="section-title" style="margin-top:8px">🤖 Bot-Details</div>{% endif %}
 {% for bot in bots %}
 <div class="bot-section" id="bot-{{ loop.index }}" data-symbol="{{ bot.symbol }}">
   <div class="bot-section-header" onclick="toggle(this)">
     <span class="chevron">▼</span>
     <span class="sym">{{ bot.symbol }}</span>
-    <span class="badge {{ 'dry' if bot.dry_run else 'live' }}">{{ 'DRY RUN' if bot.dry_run else 'LIVE' }}</span>
+    <span class="badge {{ 'dry' if bot.dry_run else 'live' }} htip"
+          data-tip="{{ 'Testmodus: Keine echten Orders.' if bot.dry_run else 'Echtgeld-Modus: Echte Orders auf Kraken.' }}">
+      {{ 'DRY RUN' if bot.dry_run else 'LIVE' }}
+    </span>
     {% if bot.state.get('timeframe') %}
-      <span class="badge stopped">{{ bot.state.timeframe }}</span>
+      <span class="badge stopped htip" data-tip="Kerzen-Zeitrahmen fuer Signalberechnung. 5m = alle 5 Min. eine neue Kerze. Kleiner = mehr Trades und Fehlsignale. Groesser = ruhiger und stabiler.">{{ bot.state.timeframe }}</span>
     {% endif %}
     {% if bot.state.get('sl_pct') %}
-      <span style="font-size:11px;color:#8b949e">
+      <span class="htip" style="font-size:11px;color:#8b949e"
+            data-tip="Fallback Stop-Loss und Take-Profit in % (werden verwendet wenn ATR nicht verfuegbar ist). Im Normalbetrieb werden ATR-basierte Werte genutzt.">
         SL {{ (bot.state.sl_pct|float * 100)|round(1) }}% &nbsp;
         TP {{ (bot.state.tp_pct|float * 100)|round(1) }}%
       </span>
     {% endif %}
     {% set _rsi = bot.state.get('rsi', '–') %}
     {% if _rsi != '–' %}
-      <span style="font-size:11px;font-weight:bold;color:{{ '#f85149' if _rsi|float > 65 else ('#3fb950' if _rsi|float < 35 else '#8b949e') }}">RSI {{ _rsi }}</span>
+      <span class="htip" style="font-size:11px;font-weight:bold;color:{{ '#f85149' if _rsi|float > 65 else ('#3fb950' if _rsi|float < 35 else '#8b949e') }}"
+            data-tip="Relative Strength Index (14 Perioden). Rot = ueberkauft (> 65), Gruen = ueberverkauft (< 35), Grau = neutral.">RSI {{ _rsi }}</span>
     {% endif %}
     {% if bot.regime != '–' %}
-      <span class="badge {{ 'trend' if bot.regime == 'TREND' else ('sideways' if bot.regime == 'SIDEWAYS' else 'volatile') }}">
+      {% set _rcls2 = {'BULL':'bull','BEAR':'bear','SIDEWAYS':'sideways','VOLATILE':'volatile','EXTREME':'extreme','TREND':'trend'}.get(bot.regime, 'noregime') %}
+      {% set _rtip2 = {
+        'BULL':     'Aufwaertstrend (EMA50 > EMA200, ADX > 22). Optimizer verwendet BULL-Combos.',
+        'BEAR':     'Abwaertstrend (EMA50 < EMA200, ADX > 22). BUY wird unterdrueckt.',
+        'SIDEWAYS': 'Seitwärtsbewegung (ADX < 22). Range-Trading-Einstellungen aktiv.',
+        'VOLATILE': 'Hohe Volatilitaet (ATR% > 3% oder BB-Width > 4%). Weites SL.',
+        'EXTREME':  'RSI-Extremwert (< 25 oder > 75). Kapitalschutz-Modus.',
+        'TREND':    'Trendmarkt (Legacy). Wie BULL.',
+      }.get(bot.regime, '') %}
+      <span class="badge {{ _rcls2 }} htip" data-tip="{{ _rtip2 }} | ADX: Trendstaerke (>22=Trend, <22=Range). ATR%: Volatilitaet als % des Kurses.">
         {{ bot.regime }}
         {% if bot.regime_adx != '–' %}&nbsp;ADX {{ bot.regime_adx }}{% endif %}
         &nbsp;ATR {{ bot.regime_atr_pct }}%
       </span>
-      <span style="font-size:10px;color:#484f58">⟳ {{ bot.regime_ago }}</span>
+      <span class="htip" style="font-size:10px;color:var(--text-mute)"
+            data-tip="Letzter Zeitpunkt der Regime-Neuberechnung durch den Supervisor.">⟳ {{ bot.regime_ago }}</span>
     {% endif %}
-    <span class="info">vor {{ bot.ago }}</span>
+    <span class="info htip" data-tip="Zeitpunkt der letzten erfolgreichen Datenaktualisierung dieses Bots.">vor {{ bot.ago }}</span>
     {% set _running = bot.process_running or bot.status == 'running' %}
-    <button class="stop-btn" data-role="stop-btn"
+    <button class="stop-btn" data-role="stop-btn" title="Bot stoppen (Prozess wird beendet, offene Trades bleiben in DB)"
             style="{{ '' if _running else 'display:none' }}"
             onclick="stopBot(event, '{{ bot.symbol }}', this)">■ Stoppen</button>
-    <button class="pause-btn" data-role="pause-btn"
+    <button class="pause-btn" data-role="pause-btn" title="Bot pausieren: Keine neuen Kaeufe, SL/TP-Monitoring laeuft weiter"
             style="{{ '' if (_running and not bot.paused) else 'display:none' }}"
             onclick="pauseBot(event, '{{ bot.symbol }}', true, this)">⏸ Pause</button>
-    <button class="pause-btn" data-role="resume-btn"
+    <button class="pause-btn" data-role="resume-btn" title="Bot fortsetzen: Normaler Betrieb wird wiederaufgenommen"
             style="{{ '' if (_running and bot.paused) else 'display:none' }}"
             onclick="pauseBot(event, '{{ bot.symbol }}', false, this)">▶ Fortsetzen</button>
     <button class="start-btn" data-role="start-btn"
@@ -670,8 +778,9 @@
             onclick="restartBot(event, this)">▶ Starten</button>
     <button class="delete-btn" data-role="delete-btn"
             style="{{ 'display:none' if _running else '' }}"
+            title="Bot loeschen: Stoppt den Prozess, entfernt Konfiguration. DB kann archiviert werden."
             onclick="openDeleteDialog(event, '{{ bot.symbol }}')">✕</button>
-    <button class="edit-btn"
+    <button class="edit-btn" title="Parameter live aendern: Aenderungen werden beim naechsten Bot-Loop (~60s) uebernommen."
             onclick="openParamsDialog(event, this)"
             data-edit-cfg='{{ {
                 "symbol":              bot.symbol,
@@ -701,7 +810,17 @@
       <h3>Offene Trades</h3>
       {% if bot.open_trades %}
       <table>
-        <tr><th>Amount</th><th>Entry</th><th>Stop-Loss</th><th>Exp. Verlust</th><th>Take-Profit</th><th>Exp. Gewinn</th><th>P&L</th><th>Seit</th><th></th></tr>
+        <tr>
+          <th class="htip" data-tip="Gekaufte Menge des Coins (in Coin-Einheiten).">Amount</th>
+          <th class="htip" data-tip="Kaufpreis der Position (Kurs zum Zeitpunkt des Kaufs).">Entry</th>
+          <th class="htip" data-tip="Synthetischer Stop-Loss: Kein echter Exchange-Order. Bot schliesst die Position wenn der Kurs diesen Wert unterschreitet. Direkt bearbeitbar. Aenderung wirkt beim naechsten Loop (60s).">Stop-Loss</th>
+          <th class="htip" data-tip="Erwarteter Verlust in EUR wenn Stop-Loss ausgeloest wird (nach Gebuehren).">Exp. Verlust</th>
+          <th class="htip" data-tip="Synthetischer Take-Profit: Bot schliesst Position bei Erreichen dieses Kurses. Direkt bearbeitbar. Aenderung wirkt beim naechsten Loop (60s).">Take-Profit</th>
+          <th class="htip" data-tip="Erwarteter Gewinn in EUR wenn Take-Profit ausgeloest wird (nach Gebuehren).">Exp. Gewinn</th>
+          <th class="htip" data-tip="Unrealisierter Gewinn/Verlust in % seit Kauf (ohne Gebuehren). Positiv = im Gewinn.">P&amp;L</th>
+          <th class="htip" data-tip="Zeitpunkt des Kaufs (Eroeffnung der Position).">Seit</th>
+          <th></th>
+        </tr>
         {% for t in bot.open_trades %}
         <tr>
           <td>{{ "%.4f"|format(t.amount) }} {{ bot.base }}</td>
@@ -719,7 +838,8 @@
               {% if t.expect_loss_eur is not none %} / -{{ "%.2f"|format(t.expect_loss_eur) }}€{% endif %}
             </span>
             {% if t.dist_to_sl_pct is not none %}
-            <span style="font-size:11px;color:{% if t.dist_to_sl_pct < 1.0 %}#f85149{% elif t.dist_to_sl_pct < 2.0 %}#d29922{% else %}#8b949e{% endif %}">
+            <span class="htip" style="font-size:11px;color:{% if t.dist_to_sl_pct < 1.0 %}#f85149{% elif t.dist_to_sl_pct < 2.0 %}#d29922{% else %}#8b949e{% endif %}"
+                  data-tip="Abstand des aktuellen Kurses zum Stop-Loss in %. Rot = unter 1% (kritisch, SL fast erreicht). Orange = unter 2%. Grau = ausreichend Puffer.">
               noch {{ "%.2f"|format(t.dist_to_sl_pct) }}% Abstand
             </span>
             {% endif %}
@@ -740,7 +860,8 @@
               {% if t.expect_profit_eur is not none %} / +{{ "%.2f"|format(t.expect_profit_eur) }}€{% endif %}
             </span>
             {% if t.dist_to_tp_pct is not none %}
-            <span style="font-size:11px;color:{% if t.dist_to_tp_pct < 0.5 %}#3fb950{% elif t.dist_to_tp_pct < 1.5 %}#58a6ff{% else %}#8b949e{% endif %}">
+            <span class="htip" style="font-size:11px;color:{% if t.dist_to_tp_pct < 0.5 %}#3fb950{% elif t.dist_to_tp_pct < 1.5 %}#58a6ff{% else %}#8b949e{% endif %}"
+                  data-tip="Abstand des aktuellen Kurses zum Take-Profit in %. Gruen = unter 0.5% (TP fast erreicht!). Blau = unter 1.5%. Grau = noch weiter entfernt.">
               noch {{ "%.2f"|format(t.dist_to_tp_pct) }}% bis TP
             </span>
             {% endif %}
@@ -753,7 +874,7 @@
           </td>
           <td style="color:#8b949e">{{ t.opened_at[:16].replace('T',' ') if t.opened_at else '–' }}</td>
           <td>
-            <button class="sltp-btn"
+            <button class="sltp-btn" title="SL/TP-Aenderungen in SQLite speichern. Bot uebernimmt neue Werte beim naechsten Loop (~60s)."
                     onclick="saveSlTp('{{ bot.symbol }}', '{{ t.client_id }}', this)">
               Speichern
             </button>
@@ -1105,7 +1226,50 @@
   </div>
 </dialog>
 
+<div id="tt"></div>
+
 <script>
+  // ── Globaler JS-Tooltip (fixed, immer über allem) ──────────────────
+  (function() {
+    const tt = document.getElementById('tt');
+    let hideTimer = null;
+
+    function showTip(el, e) {
+      const tip = el.dataset.tip;
+      if (!tip) return;
+      clearTimeout(hideTimer);
+      tt.textContent = tip;
+      tt.style.display = 'block';
+      moveTip(e);
+    }
+    function moveTip(e) {
+      const gap = 12;
+      const tw = tt.offsetWidth, th = tt.offsetHeight;
+      let x = e.clientX + gap;
+      let y = e.clientY - th - gap;
+      // rechter Rand: nach links spiegeln
+      if (x + tw > window.innerWidth - 8) x = e.clientX - tw - gap;
+      // oberer Rand: nach unten
+      if (y < 8) y = e.clientY + gap;
+      tt.style.left = x + 'px';
+      tt.style.top  = y + 'px';
+    }
+    function hideTip() {
+      hideTimer = setTimeout(() => { tt.style.display = 'none'; }, 80);
+    }
+
+    document.addEventListener('mouseover', e => {
+      const el = e.target.closest('[data-tip]');
+      if (el) showTip(el, e);
+    });
+    document.addEventListener('mousemove', e => {
+      if (tt.style.display === 'block') moveTip(e);
+    });
+    document.addEventListener('mouseout', e => {
+      if (!e.relatedTarget || !e.relatedTarget.closest('[data-tip]')) hideTip();
+    });
+  })();
+
   // Countdown (60s full-page reload, pausiert wenn ein Dialog offen ist)
   let s = 60;
   const el = document.getElementById('cd');

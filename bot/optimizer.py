@@ -13,10 +13,15 @@ KRAKEN_FEE = 0.0026  # 0.26% pro Order
 MIN_TRADES  = 5       # Varianten mit weniger Trades werden nicht gewertet
 
 RSI_ATR_COMBOS: dict[str, list[dict]] = {
-    "TREND": [
+    "BULL": [
         {"rsi_buy_max": 65, "rsi_sell_min": 35, "atr_sl_mult": 1.2, "atr_tp_mult": 2.0},
         {"rsi_buy_max": 68, "rsi_sell_min": 32, "atr_sl_mult": 1.5, "atr_tp_mult": 2.5},  # Template
         {"rsi_buy_max": 72, "rsi_sell_min": 28, "atr_sl_mult": 2.0, "atr_tp_mult": 3.0},
+    ],
+    "BEAR": [
+        {"rsi_buy_max": 40, "rsi_sell_min": 30, "atr_sl_mult": 1.8, "atr_tp_mult": 2.5},
+        {"rsi_buy_max": 45, "rsi_sell_min": 30, "atr_sl_mult": 2.0, "atr_tp_mult": 3.0},  # Template
+        {"rsi_buy_max": 50, "rsi_sell_min": 35, "atr_sl_mult": 1.5, "atr_tp_mult": 2.8},
     ],
     "SIDEWAYS": [
         {"rsi_buy_max": 57, "rsi_sell_min": 43, "atr_sl_mult": 1.0, "atr_tp_mult": 1.5},
@@ -27,6 +32,17 @@ RSI_ATR_COMBOS: dict[str, list[dict]] = {
         {"rsi_buy_max": 52, "rsi_sell_min": 48, "atr_sl_mult": 1.8, "atr_tp_mult": 3.0},
         {"rsi_buy_max": 55, "rsi_sell_min": 45, "atr_sl_mult": 2.0, "atr_tp_mult": 3.5},  # Template
         {"rsi_buy_max": 58, "rsi_sell_min": 42, "atr_sl_mult": 2.5, "atr_tp_mult": 4.0},
+    ],
+    "EXTREME": [
+        {"rsi_buy_max": 28, "rsi_sell_min": 72, "atr_sl_mult": 1.0, "atr_tp_mult": 1.8},
+        {"rsi_buy_max": 30, "rsi_sell_min": 70, "atr_sl_mult": 1.2, "atr_tp_mult": 2.0},  # Template
+        {"rsi_buy_max": 35, "rsi_sell_min": 65, "atr_sl_mult": 1.5, "atr_tp_mult": 2.5},
+    ],
+    # Legacy-Key: Rückwärtskompatibilität für ältere bot_state-Einträge
+    "TREND": [
+        {"rsi_buy_max": 65, "rsi_sell_min": 35, "atr_sl_mult": 1.2, "atr_tp_mult": 2.0},
+        {"rsi_buy_max": 68, "rsi_sell_min": 32, "atr_sl_mult": 1.5, "atr_tp_mult": 2.5},
+        {"rsi_buy_max": 72, "rsi_sell_min": 28, "atr_sl_mult": 2.0, "atr_tp_mult": 3.0},
     ],
 }
 
@@ -271,7 +287,7 @@ def best_variant(
     if not pool:
         fallback = next(v for v in STRATEGY_VARIANTS if v["name"] == "Standard")
         logger.warning("Kein Ergebnis (zu wenig Daten) – Fallback: Standard")
-        return {**fallback, **RSI_ATR_COMBOS["TREND"][1],
+        return {**fallback, **RSI_ATR_COMBOS["BULL"][1],
                 "pnl_pct": 0.0, "num_trades": 0, "win_rate": 0.0, "sqn": 0.0,
                 "use_trailing_sl": use_trailing_sl, "volume_filter": volume_filter}
 
