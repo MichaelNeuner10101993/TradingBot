@@ -157,6 +157,26 @@ def send_supervisor_recommendation(
     _send_sync(text, reply_markup=markup)
 
 
+def send_peer_strategy_adopted(
+    symbol: str,
+    peer_strat: dict,
+    local_pnl: float,
+    peer_host: str,
+):
+    """Benachrichtigung wenn eine Peer-Strategie auf eigenen Candles besser ist."""
+    val_str = f"  val={peer_strat['val_pnl']:+.2f}%" if peer_strat.get("val_pnl") is not None else ""
+    text = (
+        f"🌐 <b>Peer-Learning: {symbol}</b>\n"
+        f"Strategie von <code>{peer_host}</code> übernommen:\n"
+        f"<b>{peer_strat['strategy_name']} {peer_strat['fast']}/{peer_strat['slow']}</b>  "
+        f"{'⬆SL ' if peer_strat.get('use_trailing_sl') else ''}"
+        f"{'📊Vol ' if peer_strat.get('volume_filter') else ''}\n"
+        f"Peer P&L: {peer_strat['sim_pnl']:+.2f}%{val_str}  SQN={peer_strat['sqn']:.2f}\n"
+        f"Lokal getestet: <b>{local_pnl:+.2f}%</b>"
+    )
+    _send_sync(text)
+
+
 def send_strategy_learned(
     symbol: str,
     best: dict,

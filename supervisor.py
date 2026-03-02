@@ -319,6 +319,121 @@ def _cross_bot_learning(results: dict, dry_run: bool):
                 )
 
 
+def _peer_learning(results: dict, dry_run: bool):
+    """
+    Peer Learning: Fragt konfigurierte Peer-Pi-Instanzen nach deren besten Strategien.
+    Konfiguration via .env: PEERS=http://10.8.0.2:5001,http://10.8.0.3:5001
+
+    Ablauf:
+    1. Peer-Endpunkte abfragen (/api/peer/strategies)
+    2. Für jedes eigene Symbol: Peer-Strategien mit höherem SQN suchen (gleiches Regime)
+    3. Peer-Strategie auf eigenen Candles testen
+    4. Wenn lokal besser als eigene → in DB schreiben + Telegram-Nachricht
+    """
+    import requests as _req
+    log = logging.getLogger("supervisor")
+
+    peers_env = os.getenv("PEERS", "").strip()
+    if not peers_env:
+        return
+
+    peers = [p.strip().rstrip("/") for p in peers_env.split(",") if p.strip()]
+    log.info(f"Peer Learning: {len(peers)} Peer(s) konfiguriert")
+
+    # Alle Peer-Strategien sammeln
+    peer_strategies: list[dict] = []
+    for peer_url in peers:
+        try:
+            r = _req.get(f"{peer_url}/api/peer/strategies", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                peer_host = peer_url.split("//")[-1].split(":")[0]
+                for s in data:
+                    s["_peer_host"] = peer_host
+                    s["_peer_url"]  = peer_url
+                peer_strategies.extend(data)
+                log.debug(f"Peer {peer_host}: {len(data)} Strategien empfangen")
+        except Exception as e:
+            log.warning(f"Peer {peer_url} nicht erreichbar: {e}")
+
+    if not peer_strategies:
+        return
+
+    for symbol, data in results.items():
+        own_sqn = data["best"].get("sqn", 0.0)
+        tmpl    = REGIME_TEMPLATES[data["regime"]]
+
+        # Peers mit gleichem Symbol + Regime + besserem SQN
+        candidates = [
+            s for s in peer_strategies
+            if s.get("symbol") == symbol
+            and s.get("regime") == data["regime"]
+            and s.get("sqn", 0) > own_sqn
+        ]
+        if not candidates:
+            continue
+
+        best_peer = max(candidates, key=lambda x: x.get("sqn", 0))
+
+        # Peer-Strategie auf eigenen Candles validieren
+        shared = optimizer.simulate(
+            data["candles"],
+            best_peer["fast"], best_peer["slow"],
+            rsi_buy_max=best_peer.get("rsi_buy_max",  tmpl["rsi_buy_max"]),
+            rsi_sell_min=best_peer.get("rsi_sell_min", tmpl["rsi_sell_min"]),
+            atr_sl_mult=best_peer.get("atr_sl_mult",   tmpl["atr_sl_mult"]),
+            atr_tp_mult=best_peer.get("atr_tp_mult",   tmpl["atr_tp_mult"]),
+            use_trailing_sl=best_peer.get("use_trailing_sl", False),
+            volume_filter=best_peer.get("volume_filter", False),
+        )
+        if not shared or shared["pnl_pct"] <= data["best"]["pnl_pct"]:
+            log.debug(
+                f"Peer-Strategie für {symbol} von {best_peer['_peer_host']} "
+                f"lokal nicht besser ({shared['pnl_pct'] if shared else 'N/A'} "
+                f"vs {data['best']['pnl_pct']:+.2f}%) – verworfen"
+            )
+            continue
+
+        peer_host = best_peer["_peer_host"]
+        strat_name = f"{best_peer['strategy_name']}←{peer_host}"
+        log.info(
+            f"PEER-LEARNING: {symbol} übernimmt '{best_peer['strategy_name']}' "
+            f"von {peer_host} (f={best_peer['fast']}/s={best_peer['slow']}) | "
+            f"SQN: {own_sqn:.2f}→{best_peer['sqn']:.2f} | "
+            f"P&L: {data['best']['pnl_pct']:+.2f}%→{shared['pnl_pct']:+.2f}%"
+        )
+        if not dry_run:
+            try:
+                db = StateDB(data["db_path"])
+                db.set_state("supervisor_fast",            str(best_peer["fast"]))
+                db.set_state("supervisor_slow",            str(best_peer["slow"]))
+                db.set_state("supervisor_strategy_name",   strat_name)
+                db.set_state("supervisor_rsi_buy_max",     str(best_peer.get("rsi_buy_max",  tmpl["rsi_buy_max"])))
+                db.set_state("supervisor_rsi_sell_min",    str(best_peer.get("rsi_sell_min", tmpl["rsi_sell_min"])))
+                db.set_state("supervisor_atr_sl_mult",     str(best_peer.get("atr_sl_mult",  tmpl["atr_sl_mult"])))
+                db.set_state("supervisor_atr_tp_mult",     str(best_peer.get("atr_tp_mult",  tmpl["atr_tp_mult"])))
+                db.set_state("supervisor_sim_pnl",         f"{shared['pnl_pct']:+.2f}")
+                db.set_state("supervisor_sim_trades",      str(shared["num_trades"]))
+                db.set_state("supervisor_use_trailing_sl", str(best_peer.get("use_trailing_sl", False)))
+                db.set_state("supervisor_volume_filter",   str(best_peer.get("volume_filter",   False)))
+                db.log_supervisor_cycle(
+                    regime=data["regime"],
+                    adx=-1, atr_pct=0.0,
+                    strategy_name=strat_name,
+                    fast=best_peer["fast"], slow=best_peer["slow"],
+                    sim_pnl=shared["pnl_pct"],
+                    num_trades=shared["num_trades"],
+                    source=f"peer:{peer_host}",
+                    use_trailing_sl=best_peer.get("use_trailing_sl", False),
+                    volume_filter=best_peer.get("volume_filter",   False),
+                    sqn=best_peer.get("sqn", 0.0),
+                )
+                db.close()
+                notify.send_peer_strategy_adopted(symbol, best_peer, shared["pnl_pct"], peer_host)
+            except Exception as e:
+                log.error(f"Peer-Learning DB-Schreibfehler ({data['db_path']}): {e}")
+
+
 def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, dry_run: bool):
     """Einen Supervisor-Durchlauf über alle Bot-DBs."""
     log = logging.getLogger("supervisor")
@@ -429,6 +544,9 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
         # Cross-Bot Learning: beste Strategie zwischen Coins teilen
         if len(results) >= 2:
             _cross_bot_learning(results, dry_run)
+
+        # Peer Learning: Strategien mit anderen Pi-Instanzen teilen
+        _peer_learning(results, dry_run)
 
     finally:
         conn_c.close()

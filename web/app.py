@@ -898,6 +898,46 @@ def api_bot_pause():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/peer/strategies")
+def api_peer_strategies():
+    """
+    Gibt optimierte Strategien aller Bots zurück – für Cross-Instance Peer Learning.
+    Enthält nur Strategie-Parameter + Scoring (kein Kontostand, keine Orders).
+    """
+    results = []
+    for db_path in sorted(glob(os.path.join(DB_DIR, "*.db"))):
+        if os.path.basename(db_path) in ("candles.db", "news.db"):
+            continue
+        try:
+            db    = StateDB(db_path)
+            state = db.get_all_state()
+            db.close()
+            sqn = float(state.get("supervisor_sqn", 0) or 0)
+            if sqn <= 0:
+                continue  # Noch keine optimierte Strategie vorhanden
+            val_raw = state.get("supervisor_val_pnl")
+            results.append({
+                "symbol":          state.get("symbol", ""),
+                "regime":          state.get("supervisor_regime", ""),
+                "strategy_name":   state.get("supervisor_strategy_name", ""),
+                "fast":            int(state.get("supervisor_fast", 9)),
+                "slow":            int(state.get("supervisor_slow", 21)),
+                "rsi_buy_max":     float(state.get("supervisor_rsi_buy_max", 65)),
+                "rsi_sell_min":    float(state.get("supervisor_rsi_sell_min", 35)),
+                "atr_sl_mult":     float(state.get("supervisor_atr_sl_mult", 1.5)),
+                "atr_tp_mult":     float(state.get("supervisor_atr_tp_mult", 2.5)),
+                "use_trailing_sl": state.get("supervisor_use_trailing_sl", "False") == "True",
+                "volume_filter":   state.get("supervisor_volume_filter",   "False") == "True",
+                "sqn":             sqn,
+                "sim_pnl":         float(state.get("supervisor_sim_pnl", 0) or 0),
+                "val_pnl":         float(val_raw) if val_raw else None,
+                "num_trades":      int(state.get("supervisor_sim_trades", 0) or 0),
+            })
+        except Exception:
+            continue
+    return jsonify(results)
+
+
 @app.route("/api/check_updates")
 def check_updates():
     """Prüft ob auf dem main-Branch neuere Commits vorliegen."""
