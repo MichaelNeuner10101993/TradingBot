@@ -95,6 +95,7 @@ nano .env
 | `ANTHROPIC_API_KEY` | empfohlen | Für KI-Freitext im Telegram-Bot (console.anthropic.com) |
 | `CRYPTOPANIC_API_KEY` | optional | Kostenlos auf cryptopanic.com |
 | `TWITTER_BEARER_TOKEN` | optional | Twitter/X Basic API (~$100/Monat) |
+| `PEERS` | optional | Peer-Pi-Instanzen für Cross-Instance Learning, z.B. `http://10.8.0.2:5001,http://10.8.0.3:5001` |
 
 **Kraken API-Key Berechtigungen** (nur diese aktivieren):
 - ✅ Query Funds
@@ -406,27 +407,65 @@ Die Bots übernehmen die angepassten Parameter beim nächsten Loop-Durchlauf **o
 - **SIDEWAYS:** Engere RSI-Grenzen verhindern Fehlsignale in choppy Märkten; schnellere Gewinnmitnahme.
 - **VOLATILE:** Sehr enge RSI-Fenster (nur starke Signale), weite SL/TP um normale Ausschläge zu überstehen.
 
-### Multi-Varianten-Optimierung
+### Multi-Varianten-Optimierung (72 Varianten)
 
-Pro Supervisor-Durchlauf werden **24 Varianten** getestet (6 SMA-Kombinationen × 4 Feature-Kombos):
+Pro Supervisor-Durchlauf werden **72 Varianten** getestet:
 
-| Trailing SL | Volumen-Filter | SMA-Varianten |
-|-------------|----------------|---------------|
-| ❌ | ❌ | Scalp, Agile, Standard, MACD, Mittel, Swing |
-| ✅ | ❌ | … × 6 |
-| ❌ | ✅ | … × 6 |
-| ✅ | ✅ | … × 6 |
+```
+3 RSI/ATR-Kombos × 6 SMA-Varianten × 4 Feature-Kombos = 72 Varianten
+```
 
-Die Variante mit dem höchsten simulierten P&L gewinnt.
-Wenn die optimale Kombo von der aktuellen Bot-Konfiguration abweicht, sendet der Supervisor
-eine **Telegram-Empfehlung** – der Bot übernimmt sie aber nur, wenn kein CLI-Flag gesetzt ist.
+**RSI/ATR-Kombos pro Regime** (Supervisor wählt die beste):
 
+| Regime | RSI Buy / Sell | ATR SL-Mult | ATR TP-Mult |
+|--------|---------------|-------------|-------------|
+| TREND (3 Kombos) | 65/35 · 68/32 · 72/28 | 1.2 · 1.5 · 2.0 | 2.0 · 2.5 · 3.0 |
+| SIDEWAYS (3 Kombos) | 57/43 · 60/40 · 63/37 | 1.0 · 1.2 · 1.5 | 1.5 · 1.8 · 2.2 |
+| VOLATILE (3 Kombos) | 52/48 · 55/45 · 58/42 | 1.8 · 2.0 · 2.5 | 3.0 · 3.5 · 4.0 |
+
+**Feature-Kombos** (× 6 SMA × 3 RSI/ATR = 72):
+
+| Trailing SL | Volumen-Filter |
+|-------------|----------------|
+| ❌ | ❌ |
+| ✅ | ❌ |
+| ❌ | ✅ |
+| ✅ | ✅ |
+
+**Scoring: SQN** (System Quality Number) statt reinem P&L:
+```
+SQN = (Ø Trade-P&L / Stdabw) × √Anzahl_Trades
+```
+SQN bevorzugt konsistente Strategien gegenüber Einzel-Lucky-Trades.
+Varianten mit weniger als 5 Trades werden nicht gewertet.
+
+**Walk-Forward-Validation** verhindert Overfitting:
+```
+2000 Candles (~7 Tage) aufgeteilt in:
+  Training:   80% (~1600 Candles) → Optimierung
+  Validation: 20% (~400 Candles)  → Out-of-Sample-Test
+```
+`supervisor_val_pnl` in DB: Kennzahl ob die Strategie auch auf ungesehenen Daten funktioniert.
+
+**Historischer Candle-Cache:**
+- Max. **8640 Candles** pro Symbol (30 Tage bei 5m)
+- Beim Start: automatischer **Backfill** auf 2000 Candles (bis zu 5 Batches via API)
+
+**Proaktive Telegram-Nachrichten** wenn der Supervisor etwas Neues lernt:
+```
+📈 Gelernte Strategie: BTC/EUR
+Regime: TREND
+Strategie: Swing 21/55  ⬆SL
+Sim-P&L: +4.1%  val=+1.8%  SQN=1.84
+Δ SQN: +0.62
+```
+Wird gesendet wenn: Regime wechselt **oder** SQN-Sprung ≥ 0.5 zum Vorgänger.
+
+Wenn die optimale Feature-Kombo von der aktuellen Bot-Konfiguration abweicht, kommt zusätzlich:
 ```
 🔬 Supervisor-Empfehlung: BTC/EUR
 Strategie: Agile 7/18  Sim-P&L: +3.2% (5 Trades)
 Trailing SL: ✅ empfohlen  (aktuell: ❌)
-Volumen-Filter: ❌ empfohlen  (aktuell: ❌)
-→ Neustart mit: --trailing-sl  um zu übernehmen
 ```
 
 ### Regime-Persistenz / Warmstart
@@ -439,6 +478,38 @@ ohne auf den nächsten Supervisor-Zyklus (bis zu 5 Minuten) warten zu müssen.
 
 Wenn BTC im Trend-Regime eine bessere Strategie findet als XRP (ebenfalls Trend), wird
 die Strategie auf XRP übertragen und dort validiert bevor sie übernommen wird.
+
+### Peer Learning (mehrere Pi-Instanzen)
+
+Mehrere Freunde mit eigenem Pi und Kraken-Account können ihre **gelernten Strategien
+untereinander teilen** – über WireGuard VPN, ohne zentralen Server.
+
+```
+Pi-A (10.8.0.1) ←── WireGuard ───→ Pi-B (10.8.0.2)
+     ↑                                    ↑
+  PEERS=http://10.8.0.2:5001         PEERS=http://10.8.0.1:5001
+```
+
+**Setup (jeder Pi, einmalig):**
+```bash
+# WireGuard-Gruppe: ein Pi als Hub, andere als Clients
+pivpn add          # für jeden Freund einen VPN-Client anlegen
+pivpn -qr <Name>   # QR-Code zum Scannen schicken
+
+# Peers in .env eintragen
+echo "PEERS=http://10.8.0.2:5001,http://10.8.0.3:5001" >> .env
+sudo systemctl restart tradingbot-supervisor.service
+```
+
+**Wie es funktioniert:**
+1. Jeder Pi exposed `GET /api/peer/strategies` (Port 5001, nur VPN-erreichbar)
+2. Supervisor fragt alle Peers alle 5 Minuten ab
+3. Peer-Strategie wird **lokal auf eigenen Candles** getestet bevor sie übernommen wird
+4. Übernahme nur wenn SQN **und** P&L auf eigenen Candles besser
+5. Telegram-Nachricht bei Übernahme: `🌐 Peer-Learning: BTC/EUR – Strategie von 10.8.0.2 übernommen`
+
+**Privacy:** Der Endpunkt gibt nur Strategie-Parameter + Scoring zurück.
+Kein Kontostand, keine Orders, keine persönlichen Daten. Nur über WireGuard erreichbar.
 
 ### Supervisor starten
 
@@ -543,6 +614,8 @@ botvenv/bin/python web/app.py
 - Zeigt alle Bot-Instanzen automatisch (liest alle `db/*.db`)
 - **Auto-Refresh**: 60s (Seite via JS, pausiert automatisch wenn ein Dialog offen ist), 5s (Cards live via `/api/bots`)
 - **Regime-Badge** pro Bot: TREND / SIDEWAYS / VOLATILE mit Farbe
+- **Status-Badge**: `● ON` (laufend) · `⏸ PAU` (pausiert) · `■ OFF` (gestoppt)
+- **⏸ Pause / ▶ Fortsetzen**: Bot läuft weiter, führt aber keine Orders aus – nützlich z.B. bei bekannten News-Events
 - **SL/TP editierbar**: ± Buttons mit adaptiver Schrittweite (~1.50€ P&L pro Klick)
 - **P&L-Anzeige**: Netto nach Kraken-Gebühren (0.26% pro Order)
 
@@ -719,8 +792,8 @@ sudo systemctl start news-agent
 | `/portfolio` | Offene Positionen: Entry, Jetzt-Preis, P&L EUR+%, SL/TP mit Abstand |
 | `/rendite` | Rentabilität: Win-Rate, Gesamt-P&L, beste/schlechteste Trades, Sim-P&L |
 | `/holdings` | Alle Coins auf Kraken (Menge × Preis, sortiert nach EUR-Wert) |
-| `/supervisor` | Supervisor-Übersicht: letztes Regime/Strategie/Sim-P&L pro Bot |
-| `/supervisor BTC/EUR` | Detailverlauf: Regime-Verteilung, Top-Strategien, Cross-Bot-Events |
+| `/supervisor` | Supervisor-Übersicht: letztes Regime/Strategie/Sim-P&L/val-P&L/SQN pro Bot |
+| `/supervisor BTC/EUR` | Detailverlauf: Regime-Verteilung, Top-Strategien, Ø SQN, Ø val-P&L, Cross-Bot-Events |
 | `/sentiment BTC/EUR` | Aktueller News-Sentiment für einen Coin |
 | `/news` | 10 stärkste News der letzten 48h |
 | `/news BTC/EUR` | 5 neueste News für diesen Coin |
@@ -728,6 +801,8 @@ sudo systemctl start news-agent
 | `/start_bot BTC/EUR [params]` | Bot starten (ohne params: gespeicherte Werte; mit params: Override) |
 | `/stop_bot BTC/EUR` | Bot stoppen |
 | `/stop_all` | Alle laufenden Bots sofort stoppen |
+| Freitext: `pausier BTC` | Handel pausieren (Bot läuft, führt aber keine Orders aus, Status: ⏸ PAU) |
+| Freitext: `fortsetzen BTC` | Pausierten Handel fortsetzen |
 | `/buy BTC/EUR` | Force-BUY beim nächsten Loop |
 | `/sell BTC/EUR` | Force-SELL beim nächsten Loop |
 | `/set_sl BTC/EUR 2.0` | Stop-Loss auf 2% setzen |
