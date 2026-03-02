@@ -874,6 +874,18 @@ Einmalig beheben:
 git config --global --add safe.directory ~/bot
 ```
 
+### Bots starten nach Reboot nicht automatisch
+
+Tritt auf wenn `tradingbot.target` nicht aktiviert ist (z.B. nach Neuinstallation oder manuellem `disable`).
+
+```bash
+sudo systemctl is-enabled tradingbot.target   # sollte "enabled" ausgeben
+sudo systemctl enable tradingbot.target       # falls "disabled"
+sudo systemctl daemon-reload
+```
+
+`install.sh` setzt das `enable` normalerweise automatisch. Wenn es trotzdem fehlt, einmalig manuell ausführen.
+
 ### `curl … | bash` bricht mit Fehler 23 ab
 
 Passiert wenn das Installationsskript via Pipe gestartet wird und `read`-Aufrufe fehlschlagen.
