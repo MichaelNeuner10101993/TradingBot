@@ -1399,7 +1399,7 @@ class TelegramNewsBot:
 
         # erklaerung / was ist / wie funktioniert
         m = re.search(
-            r'\b(?:erkl[äa]r(?:ung)?e?|was ist|wie funktioniert)\s+([\w-]+)', text
+            r'\b(?:erkl[äa]r(?:ung)?e?|was ist|was bedeutet|wie funktioniert|was macht|wozu dient)\s+([\w()\-]+)', text
         )
         if m:
             context.args = [m.group(1)]
