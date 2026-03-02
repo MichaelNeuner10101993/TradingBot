@@ -73,12 +73,18 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 16px;
-      cursor: pointer;
-      transition: border-color .15s, box-shadow .15s;
+      cursor: grab;
+      transition: border-color .15s, box-shadow .15s, opacity .15s;
       text-decoration: none;
     }
-    .bot-card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent)22; }
+    .bot-card:hover    { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent)22; }
     .bot-card.error-card { border-color: #3d1a1a; }
+    .bot-card.dragging { opacity: 0.35; box-shadow: none; cursor: grabbing; }
+    .bot-card.drag-over {
+      border-color: var(--accent);
+      outline: 2px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+      background: var(--bg-hover);
+    }
 
     .bot-card .sym {
       font-size: 16px;
@@ -554,7 +560,8 @@
 {% for bot in bots %}
   <a class="bot-card {% if bot.get('error') %}error-card{% endif %}"
      href="#bot-{{ loop.index }}"
-     data-symbol="{{ bot.symbol }}">
+     data-symbol="{{ bot.symbol }}"
+     draggable="true">
     {# ── Tooltip-Texte ─────────────────────────────────── #}
     {% set _sig_tip = {
       'BUY':  'Kaufsignal: Fast-SMA kreuzt Slow-SMA von unten nach oben und RSI liegt unter der Kaufschwelle. Bot hat eine Long-Position eroeffnet oder wird es beim naechsten Loop tun.',
@@ -699,6 +706,7 @@
 
 <!-- ── Per-Bot Detail Sections ──────────────────────────── -->
 {% if bots %}<div class="section-title" style="margin-top:8px">🤖 Bot-Details</div>{% endif %}
+<div id="bot-details">
 {% for bot in bots %}
 <div class="bot-section" id="bot-{{ loop.index }}" data-symbol="{{ bot.symbol }}">
   <div class="bot-section-header" onclick="toggle(this)">
@@ -1035,6 +1043,7 @@
   {% endif %}
 </div>
 {% endfor %}
+</div><!-- #bot-details -->
 
 <footer>Trading Bot Dashboard · Cards live alle 5s · Seite neu alle 60s · {{ bots|length }} Instanz{{ 'en' if bots|length != 1 else '' }}</footer>
 
@@ -1267,6 +1276,89 @@
     });
     document.addEventListener('mouseout', e => {
       if (!e.relatedTarget || !e.relatedTarget.closest('[data-tip]')) hideTip();
+    });
+  })();
+
+  // ── Drag & Drop – Kartenreihenfolge ───────────────────────────────────
+  (function() {
+    const overview  = document.querySelector('.overview');
+    const detailsEl = document.getElementById('bot-details');
+    if (!overview || !detailsEl) return;
+
+    let dragSrc = null;
+
+    function getOrder() {
+      return [...overview.querySelectorAll('.bot-card[data-symbol]')]
+        .map(el => el.dataset.symbol);
+    }
+
+    function syncDetails(symbols) {
+      symbols.forEach(sym => {
+        const sec = detailsEl.querySelector(`.bot-section[data-symbol="${CSS.escape(sym)}"]`);
+        if (sec) detailsEl.appendChild(sec);
+      });
+    }
+
+    function restoreOrder() {
+      let saved;
+      try { saved = JSON.parse(localStorage.getItem('bot-order') || 'null'); } catch { return; }
+      if (!Array.isArray(saved)) return;
+      const addBtn = overview.querySelector('.add-bot-btn');
+      saved.forEach(sym => {
+        const card = overview.querySelector(`.bot-card[data-symbol="${CSS.escape(sym)}"]`);
+        if (card) overview.insertBefore(card, addBtn);
+      });
+      syncDetails(getOrder());
+    }
+
+    restoreOrder();
+
+    overview.addEventListener('dragstart', e => {
+      const card = e.target.closest('.bot-card[draggable]');
+      if (!card) return;
+      dragSrc = card;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.dataset.symbol);
+      requestAnimationFrame(() => card.classList.add('dragging'));
+    });
+
+    overview.addEventListener('dragend', () => {
+      if (dragSrc) dragSrc.classList.remove('dragging');
+      dragSrc = null;
+      overview.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+    });
+
+    overview.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const card = e.target.closest('.bot-card[draggable]');
+      if (!card || card === dragSrc) return;
+      overview.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+      card.classList.add('drag-over');
+    });
+
+    overview.addEventListener('dragleave', e => {
+      const card = e.target.closest('.bot-card');
+      if (card) card.classList.remove('drag-over');
+    });
+
+    overview.addEventListener('drop', e => {
+      e.preventDefault();
+      const target = e.target.closest('.bot-card[draggable]');
+      if (!target || target === dragSrc || !dragSrc) return;
+
+      // Links- oder rechte Hälfte der Zielkarte → davor oder danach einfügen
+      const rect = target.getBoundingClientRect();
+      if (e.clientX < rect.left + rect.width / 2) {
+        overview.insertBefore(dragSrc, target);
+      } else {
+        target.after(dragSrc);
+      }
+
+      target.classList.remove('drag-over');
+      const order = getOrder();
+      syncDetails(order);
+      localStorage.setItem('bot-order', JSON.stringify(order));
     });
   })();
 
