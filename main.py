@@ -86,6 +86,11 @@ def main():
     # CLI-Feature-Flags (haben Vorrang vor Supervisor-Empfehlung)
     _cli_trailing_set = args.trailing_sl
     _cli_vol_set      = args.volume_filter
+    # Laufzeit-Flags: werden gesetzt wenn User via Dashboard/Telegram überschreibt
+    _rt_trailing_set  = False
+    _rt_vol_set       = False
+    _rt_rsi_set       = False
+    _rt_sma_set       = False
     if args.trailing_sl:                    risk_cfg.use_trailing_sl    = True
     if args.trailing_sl_pct is not None:    risk_cfg.trailing_sl_pct    = args.trailing_sl_pct
     if args.sl_cooldown is not None:        risk_cfg.sl_cooldown_candles = args.sl_cooldown
@@ -199,25 +204,35 @@ def main():
                             setattr(_obj, _attr, _cast(_v))
                             db.del_state(_ok)
                             log.info(f"Laufzeit-Override: {_attr} = {getattr(_obj, _attr)}")
+                            # Supervisor darf diesen Parameter nicht mehr überschreiben
+                            if _ok == "pending_trailing_sl":
+                                _rt_trailing_set = True
+                            elif _ok == "pending_volume_filter":
+                                _rt_vol_set = True
+                            elif _ok in ("pending_rsi_buy_max", "pending_rsi_sell_min"):
+                                _rt_rsi_set = True
+                            elif _ok in ("pending_fast_period", "pending_slow_period"):
+                                _rt_sma_set = True
                         except (ValueError, TypeError) as _e:
                             log.warning(f"Override {_ok} ungültig: {_e}")
                             db.del_state(_ok)
 
                 if _sv.get("supervisor_regime"):
                     try:
-                        risk_cfg.rsi_buy_max  = float(_sv.get("supervisor_rsi_buy_max",  risk_cfg.rsi_buy_max))
-                        risk_cfg.rsi_sell_min = float(_sv.get("supervisor_rsi_sell_min", risk_cfg.rsi_sell_min))
+                        if not _rt_rsi_set:
+                            risk_cfg.rsi_buy_max  = float(_sv.get("supervisor_rsi_buy_max",  risk_cfg.rsi_buy_max))
+                            risk_cfg.rsi_sell_min = float(_sv.get("supervisor_rsi_sell_min", risk_cfg.rsi_sell_min))
                         risk_cfg.atr_sl_mult  = float(_sv.get("supervisor_atr_sl_mult",  risk_cfg.atr_sl_mult))
                         risk_cfg.atr_tp_mult  = float(_sv.get("supervisor_atr_tp_mult",  risk_cfg.atr_tp_mult))
-                        if _sv.get("supervisor_fast"):
+                        if _sv.get("supervisor_fast") and not _rt_sma_set:
                             bot_cfg.fast_period = int(_sv.get("supervisor_fast", bot_cfg.fast_period))
                             bot_cfg.slow_period = int(_sv.get("supervisor_slow", bot_cfg.slow_period))
-                        # Feature-Flags nur übernehmen wenn NICHT via CLI gesetzt
-                        if not _cli_trailing_set:
+                        # Feature-Flags nur übernehmen wenn NICHT via CLI oder Laufzeit gesetzt
+                        if not _cli_trailing_set and not _rt_trailing_set:
                             sv_trail = _sv.get("supervisor_use_trailing_sl", "")
                             if sv_trail.lower() in ("true", "false"):
                                 risk_cfg.use_trailing_sl = sv_trail.lower() == "true"
-                        if not _cli_vol_set:
+                        if not _cli_vol_set and not _rt_vol_set:
                             sv_vol = _sv.get("supervisor_volume_filter", "")
                             if sv_vol.lower() in ("true", "false"):
                                 risk_cfg.volume_filter = sv_vol.lower() == "true"

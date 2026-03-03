@@ -717,11 +717,15 @@ def _update_conf_args(symbol_safe: str, data: dict):
         args_list = shlex.split(m.group(1))
         # data_key → (cli_flag, divisor_to_fraction)  divisor=100 wenn UI %-Wert sendet
         ARG_MAP = {
-            "fast_period":    ("--fast",           1),
-            "slow_period":    ("--slow",           1),
-            "sl_pct":         ("--sl",             100),
-            "tp_pct":         ("--tp",             100),
-            "safety_buffer":  ("--safety-buffer",  100),
+            "fast_period":          ("--fast",               1),
+            "slow_period":          ("--slow",               1),
+            "sl_pct":               ("--sl",                 100),
+            "tp_pct":               ("--tp",                 100),
+            "safety_buffer":        ("--safety-buffer",      100),
+            "trailing_sl_pct":      ("--trailing-sl-pct",    1),
+            "volume_factor":        ("--volume-factor",       1),
+            "breakeven_pct":        ("--breakeven-pct",       1),
+            "partial_tp_fraction":  ("--partial-tp-fraction", 1),
         }
         for key, (flag, div) in ARG_MAP.items():
             val = data.get(key)
@@ -732,6 +736,22 @@ def _update_conf_args(symbol_safe: str, data: dict):
                 args_list[args_list.index(flag) + 1] = val_str
             else:
                 args_list += [flag, val_str]
+        # Boolean-Flags (kein Wert, nur Flag-Präsenz): ein-/ausschalten
+        BOOL_FLAGS = {
+            "trailing_sl":  "--trailing-sl",
+            "volume_filter": "--volume-filter",
+            "breakeven_enabled": "--breakeven",
+            "partial_tp":   "--partial-tp",
+        }
+        for key, flag in BOOL_FLAGS.items():
+            val = data.get(key)
+            if val is None:
+                continue
+            enabled = str(val).lower() in ("true", "1", "yes")
+            if enabled and flag not in args_list:
+                args_list.append(flag)
+            elif not enabled and flag in args_list:
+                args_list.remove(flag)
         new_args = " ".join(args_list)
         new_content = re.sub(r'^BOT_ARGS=.*$', f'BOT_ARGS={new_args}', content, flags=re.MULTILINE)
         with open(conf_path, "w") as f:
