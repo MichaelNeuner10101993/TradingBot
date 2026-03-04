@@ -953,8 +953,8 @@
           {% set _fast = bot.state.get('fast_period', '9') %}
           {% set _slow = bot.state.get('slow_period', '21') %}
           <div class="cfg-row"><span class="cfg-key htip" data-tip="Kerzen-Größe für Signalberechnung. 5m = alle 5 Min. eine Entscheidung.">Timeframe</span><span class="cfg-val">{{ _tf }}</span></div>
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="Schneller gleitender Durchschnitt – kreuzt Slow MA = Signal.">Fast MA</span><span class="cfg-val">{{ _fast }}</span></div>
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="Langsamer gleitender Durchschnitt.">Slow MA</span><span class="cfg-val">{{ _slow }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Schneller gleitender Durchschnitt – kreuzt Slow MA = Signal.">Fast MA</span><span class="cfg-val" data-cfg-k="fast">{{ _fast }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Langsamer gleitender Durchschnitt.">Slow MA</span><span class="cfg-val" data-cfg-k="slow">{{ _slow }}</span></div>
           <div class="cfg-row"><span class="cfg-key htip" data-tip="Vom Supervisor gewählte Strategie-Variante.">Strategie</span><span class="cfg-val" style="color:#58a6ff">{{ bot.strategy_name }}</span></div>
           {% set _sp = bot.sim_pnl %}
           {% if _sp and _sp != '–' %}
@@ -994,8 +994,8 @@
             <span class="cfg-val" style="color:{% if _rsi_now|float > 65 %}#f85149{% elif _rsi_now|float < 35 %}#3fb950{% else %}#8b949e{% endif %}">{{ _rsi_now }}</span>
           </div>
           {% endif %}
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Kauf: kein BUY wenn RSI über diesem Wert.">RSI Kauf-Max</span><span class="cfg-val">{{ _rsi_buy }}</span></div>
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Verkauf: kein SELL wenn RSI unter diesem Wert.">RSI Verk.-Min</span><span class="cfg-val">{{ _rsi_sell }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Kauf: kein BUY wenn RSI über diesem Wert.">RSI Kauf-Max</span><span class="cfg-val" data-cfg-k="rsi_buy">{{ _rsi_buy }}</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="RSI-Schwelle Verkauf: kein SELL wenn RSI unter diesem Wert.">RSI Verk.-Min</span><span class="cfg-val" data-cfg-k="rsi_sell">{{ _rsi_sell }}</span></div>
           {% if _atr_sl != '–' %}
           <div class="cfg-row"><span class="cfg-key htip" data-tip="ATR-Multiplikator für Stop-Loss. SL = ATR × Mult unter Entry.">ATR SL ×</span><span class="cfg-val">{{ _atr_sl }}</span></div>
           {% endif %}
@@ -1009,22 +1009,22 @@
           <div class="cfg-group-title">🛑 Stop-Loss &amp; Take-Profit</div>
           {% set _sl_pct = (bot.state.get('sl_pct', '0.03')|float * 100)|round(2) %}
           {% set _tp_pct = (bot.state.get('tp_pct', '0.06')|float * 100)|round(2) %}
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-SL in % – wird genutzt wenn ATR-Berechnung nicht möglich (wenig Daten).">Fallback SL</span><span class="cfg-val" style="color:#f85149">{{ _sl_pct }}%</span></div>
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-TP in % – wird genutzt wenn ATR-Berechnung nicht möglich.">Fallback TP</span><span class="cfg-val" style="color:#3fb950">{{ _tp_pct }}%</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-SL in % – wird genutzt wenn ATR-Berechnung nicht möglich (wenig Daten).">Fallback SL</span><span class="cfg-val" style="color:#f85149" data-cfg-k="sl_pct">{{ _sl_pct }}%</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Fallback-TP in % – wird genutzt wenn ATR-Berechnung nicht möglich.">Fallback TP</span><span class="cfg-val" style="color:#3fb950" data-cfg-k="tp_pct">{{ _tp_pct }}%</span></div>
           {% set _trail_on  = bot.state.get('use_trailing_sl', 'False') == 'True' %}
           {% set _trail_pct = (bot.state.get('trailing_sl_pct', '0.02')|float * 100)|round(1) %}
           <div class="cfg-row">
             <span class="cfg-key htip" data-tip="Trailing SL folgt dem Kurs automatisch nach oben – nie nach unten. Sichert wachsende Gewinne.">Trailing SL</span>
-            <span class="cfg-val {% if _trail_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _trail_on %}✅ {{ _trail_pct }}%{% else %}❌ aus{% endif %}</span>
+            <span class="cfg-val {% if _trail_on %}cfg-on{% else %}cfg-off{% endif %}" data-cfg-k="trailing_sl">{% if _trail_on %}✅ {{ _trail_pct }}%{% else %}❌ aus{% endif %}</span>
           </div>
           {% set _be_on  = bot.state.get('breakeven_enabled', 'False') == 'True' %}
           {% set _be_pct = (bot.state.get('breakeven_trigger_pct', '0.01')|float * 100)|round(1) %}
           <div class="cfg-row">
             <span class="cfg-key htip" data-tip="Breakeven: SL springt auf Kaufpreis sobald der Kurs X% gestiegen ist – kein Verlust mehr möglich.">Breakeven SL</span>
-            <span class="cfg-val {% if _be_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _be_on %}✅ {{ _be_pct }}%{% else %}❌ aus{% endif %}</span>
+            <span class="cfg-val {% if _be_on %}cfg-on{% else %}cfg-off{% endif %}" data-cfg-k="breakeven">{% if _be_on %}✅ {{ _be_pct }}%{% else %}❌ aus{% endif %}</span>
           </div>
           {% set _cooldown = bot.state.get('sl_cooldown_candles', '3') %}
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="SL-Cooldown: Anzahl Candles Pause nach einem SL-Hit, bevor wieder gekauft werden darf.">SL-Cooldown</span><span class="cfg-val">{{ _cooldown }} Candles</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="SL-Cooldown: Anzahl Candles Pause nach einem SL-Hit, bevor wieder gekauft werden darf.">SL-Cooldown</span><span class="cfg-val" data-cfg-k="cooldown">{{ _cooldown }} Candles</span></div>
         </div>
 
         <!-- Features & Kapital -->
@@ -1034,13 +1034,13 @@
           {% set _vol_fac = bot.state.get('volume_factor', '1.2') %}
           <div class="cfg-row">
             <span class="cfg-key htip" data-tip="Volumen-Filter: Kauf nur wenn aktuelles Volumen über dem Durchschnitt × Faktor liegt.">Volumen-Filter</span>
-            <span class="cfg-val {% if _vol_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _vol_on %}✅ ×{{ _vol_fac }}{% else %}❌ aus{% endif %}</span>
+            <span class="cfg-val {% if _vol_on %}cfg-on{% else %}cfg-off{% endif %}" data-cfg-k="volume_filter">{% if _vol_on %}✅ ×{{ _vol_fac }}{% else %}❌ aus{% endif %}</span>
           </div>
           {% set _ptp_on   = bot.state.get('partial_tp_enabled', 'False') == 'True' %}
           {% set _ptp_frac = (bot.state.get('partial_tp_fraction', '0.5')|float * 100)|round(0)|int %}
           <div class="cfg-row">
             <span class="cfg-key htip" data-tip="Partial TP: beim TP-Hit nur X% der Position verkaufen, Rest läuft weiter mit SL auf Breakeven.">Partial TP</span>
-            <span class="cfg-val {% if _ptp_on %}cfg-on{% else %}cfg-off{% endif %}">{% if _ptp_on %}✅ {{ _ptp_frac }}%{% else %}❌ aus{% endif %}</span>
+            <span class="cfg-val {% if _ptp_on %}cfg-on{% else %}cfg-off{% endif %}" data-cfg-k="partial_tp">{% if _ptp_on %}✅ {{ _ptp_frac }}%{% else %}❌ aus{% endif %}</span>
           </div>
           {% set _htf_tf = bot.state.get('htf_timeframe', '') %}
           <div class="cfg-row">
@@ -1052,7 +1052,7 @@
             {% endif %}
           </div>
           {% set _buf = (bot.state.get('safety_buffer_pct', '0.10')|float * 100)|round(1) %}
-          <div class="cfg-row"><span class="cfg-key htip" data-tip="Safety Buffer: Anteil des Kapitals der nie investiert wird. 10% = von 1000€ werden max. 900€ eingesetzt.">Safety Buffer</span><span class="cfg-val">{{ _buf }}%</span></div>
+          <div class="cfg-row"><span class="cfg-key htip" data-tip="Safety Buffer: Anteil des Kapitals der nie investiert wird. 10% = von 1000€ werden max. 900€ eingesetzt.">Safety Buffer</span><span class="cfg-val" data-cfg-k="buf">{{ _buf }}%</span></div>
           {% set _bq = bot.state.get('balance_quote', '') %}
           {% set _bb = bot.state.get('balance_base',  '') %}
           {% if _bq and _bq not in ('', '0', '0.0') %}
@@ -1797,6 +1797,65 @@
         if (delBtn)                          delBtn.style.display   = isRunning ? 'none' : '';
         if (pauseBtn  && !pauseBtn.disabled)  pauseBtn.style.display  = (isRunning && !isPaused) ? '' : 'none';
         if (resumeBtn && !resumeBtn.disabled) resumeBtn.style.display = (isRunning && isPaused)  ? '' : 'none';
+      }
+
+      // ─ Aktive Konfiguration live aktualisieren ─
+      if (section && bot.state) {
+        const st = bot.state;
+        const upd = (k, text, onOff) => {
+          const el = section.querySelector(`[data-cfg-k="${k}"]`);
+          if (!el) return;
+          el.textContent = text;
+          if (onOff === true)  { el.classList.add('cfg-on');  el.classList.remove('cfg-off'); }
+          if (onOff === false) { el.classList.add('cfg-off'); el.classList.remove('cfg-on');  }
+        };
+        upd('fast',    st.fast_period  || '9');
+        upd('slow',    st.slow_period  || '21');
+        upd('sl_pct',  (parseFloat(st.sl_pct  || '0.03') * 100).toFixed(2) + '%');
+        upd('tp_pct',  (parseFloat(st.tp_pct  || '0.06') * 100).toFixed(2) + '%');
+        upd('rsi_buy',  st.supervisor_rsi_buy_max  || st.effective_rsi_buy_max  || '65');
+        upd('rsi_sell', st.supervisor_rsi_sell_min || st.effective_rsi_sell_min || '35');
+        upd('buf',      (parseFloat(st.safety_buffer_pct || '0.10') * 100).toFixed(1) + '%');
+        upd('cooldown', (st.sl_cooldown_candles || '3') + ' Candles');
+        const trailOn = st.use_trailing_sl === 'True';
+        upd('trailing_sl', trailOn ? '✅ ' + (parseFloat(st.trailing_sl_pct || '0.02') * 100).toFixed(1) + '%' : '❌ aus', trailOn);
+        const beOn = st.breakeven_enabled === 'True';
+        upd('breakeven', beOn ? '✅ ' + (parseFloat(st.breakeven_trigger_pct || '0.01') * 100).toFixed(1) + '%' : '❌ aus', beOn);
+        const volOn = st.volume_filter === 'True';
+        upd('volume_filter', volOn ? '✅ ×' + (st.volume_factor || '1.2') : '❌ aus', volOn);
+        const ptpOn = st.partial_tp_enabled === 'True';
+        upd('partial_tp', ptpOn ? '✅ ' + Math.round(parseFloat(st.partial_tp_fraction || '0.5') * 100) + '%' : '❌ aus', ptpOn);
+      }
+
+      // ─ data-edit-cfg am ⚙-Button aktualisieren (Dialog zeigt immer aktuelle Werte) ─
+      const editBtn = section ? section.querySelector('[data-edit-cfg]') : null;
+      if (editBtn && bot.state) {
+        const st = bot.state;
+        editBtn.setAttribute('data-edit-cfg', JSON.stringify({
+          symbol:              bot.symbol,
+          fast_period:         parseInt(st.fast_period)  || 9,
+          slow_period:         parseInt(st.slow_period)  || 21,
+          sl_pct:              Math.round(parseFloat(st.sl_pct  || '0.03') * 10000) / 100,
+          tp_pct:              Math.round(parseFloat(st.tp_pct  || '0.06') * 10000) / 100,
+          safety_buffer:       Math.round(parseFloat(st.safety_buffer_pct || '0.10') * 1000) / 10,
+          rsi_buy_max:         parseFloat(st.effective_rsi_buy_max  || st.supervisor_rsi_buy_max  || '65'),
+          rsi_sell_min:        parseFloat(st.effective_rsi_sell_min || st.supervisor_rsi_sell_min || '35'),
+          trailing_sl:         st.use_trailing_sl === 'True',
+          trailing_sl_pct:     Math.round(parseFloat(st.trailing_sl_pct  || '0.02') * 1000) / 10,
+          breakeven_enabled:   st.breakeven_enabled === 'True',
+          breakeven_pct:       Math.round(parseFloat(st.breakeven_trigger_pct || '0.01') * 1000) / 10,
+          volume_filter:       st.volume_filter === 'True',
+          volume_factor:       parseFloat(st.volume_factor || '1.2'),
+          partial_tp:          st.partial_tp_enabled === 'True',
+          partial_tp_fraction: Math.round(parseFloat(st.partial_tp_fraction || '0.5') * 100),
+          sentiment_buy_enabled:    st.sentiment_buy_enabled    === 'True',
+          sentiment_buy_min:        parseFloat(st.sentiment_buy_min        || '0.1'),
+          sentiment_sell_enabled:   st.sentiment_sell_enabled   === 'True',
+          sentiment_sell_max:       parseFloat(st.sentiment_sell_max       || '-0.3'),
+          sentiment_sell_mode:      st.sentiment_sell_mode      || 'block',
+          sentiment_stop_enabled:   st.sentiment_stop_enabled   === 'True',
+          sentiment_stop_threshold: parseFloat(st.sentiment_stop_threshold || '-0.5'),
+        }));
       }
     });
   }
