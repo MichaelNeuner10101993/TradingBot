@@ -67,6 +67,11 @@ class RiskConfig:
     partial_tp_fraction: float = 0.50   # 50% verkaufen, 50% als Remainder weiterführen
     # Auto-Cleanup: alte orders/errors-Einträge regelmäßig löschen (trades nie)
     cleanup_days: int = 30
+    # Trend-Filter: BUY nur im langfristigen Aufwärtstrend
+    sma200_filter:  bool  = False   # BUY nur wenn Preis > SMA200
+    slope_filter:   bool  = False   # BUY nur wenn Slow-SMA nicht stark fällt
+    slope_lookback: int   = 20      # Lookback-Candles für Slope-Berechnung (20 × 5min = 100min)
+    slope_min_pct:  float = -0.15   # Min. Slope in % (−0.15 = max. 0.15% Rückgang erlaubt)
     # Sentiment-Filter (News-Agent → Supervisor → bot_state)
     sentiment_buy_enabled:    bool  = False   # BUY nur wenn Score ≥ sentiment_buy_min
     sentiment_buy_min:        float = 0.1     # Mindestscore für BUY

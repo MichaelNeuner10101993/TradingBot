@@ -318,7 +318,7 @@ class TelegramNewsBot:
             ("start",     "Begrüßung"),
             ("status",    "Status aller Bots inkl. Balance"),
             ("portfolio", "Offene Positionen + P&L"),
-            ("params",    "Parameter eines Bots (z.B. /params BTC/EUR)"),
+            ("params",    "Parameter aller aktiven Bots (oder /params BTC/EUR)"),
             ("start_bot", "Bot starten (z.B. /start_bot BTC/EUR)"),
             ("stop_bot",  "Bot stoppen (z.B. /stop_bot BTC/EUR)"),
             ("stop_all",  "Alle Bots sofort stoppen"),
@@ -657,18 +657,19 @@ class TelegramNewsBot:
         result = self._apply_supervisor_for(symbol)
         if result["ok"]:
             p = result["params"]
-            lines = [f"✅ *Supervisor\\-Empfehlung für {_esc(symbol)} übernommen*"]
-            lines.append(f"Fast {p.get('fast_period')} / Slow {p.get('slow_period')}")
+            lines = [f"✅ <b>Supervisor-Empfehlung für {symbol} übernommen</b>"]
+            if "fast_period" in p:
+                lines.append(f"Fast {p['fast_period']} / Slow {p.get('slow_period', '?')}")
             if p.get("trailing_sl") is not None:
                 lines.append(f"Trailing SL: {'✅' if p['trailing_sl'] else '❌'}")
             if p.get("volume_filter") is not None:
-                lines.append(f"Volumen\\-Filter: {'✅' if p['volume_filter'] else '❌'}")
-            lines.append("_Wirkt beim nächsten Loop \\(~60s\\)_")
+                lines.append(f"Volumen-Filter: {'✅' if p['volume_filter'] else '❌'}")
+            lines.append("<i>Wirkt beim nächsten Loop (~60s)</i>")
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+            await query.message.reply_text("\n".join(lines), parse_mode="HTML")
         else:
             await query.message.reply_text(
-                f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2
+                f"❌ Fehler: {result['error']}", parse_mode="HTML"
             )
 
     def _apply_supervisor_for(self, symbol: str) -> dict:
@@ -736,7 +737,7 @@ class TelegramNewsBot:
             "/supervisor \\- Supervisor\\-Erfahrung \\(Regime\\-Verlauf, Strategien\\)\n"
             "/sentiment \\- Sentiment\\-Trend der letzten 24h \\(z\\.B\\. /sentiment BTC/EUR\\)\n"
             "/news BTC/EUR \\- Letzte relevante News für einen Coin\n"
-            "/params BTC/EUR \\- Parameter anzeigen\n\n"
+            "/params \\- Parameter aller aktiven Bots \\(oder /params BTC/EUR\\)\n\n"
             "▶ *Bot\\-Verwaltung*\n"
             "/start\\_bot BTC/EUR \\- Bot starten\n"
             "/stop\\_bot BTC/EUR \\- Bot stoppen\n"
@@ -1434,10 +1435,11 @@ class TelegramNewsBot:
             await self._cmd_sell(update, context)
             return
 
-        # params / parameter <symbol>
-        m = re.search(r'\bparams?\s+([\w/]+)|\bparameter\s+([\w/]+)', text)
+        # params / parameter [<symbol>]
+        m = re.search(r'\bparams?\b(?:\s+([\w/]+))?|\bparameter\b(?:\s+([\w/]+))?', text)
         if m:
-            context.args = [_normalize_symbol(m.group(1) or m.group(2))]
+            sym = m.group(1) or m.group(2)
+            context.args = [_normalize_symbol(sym)] if sym else []
             await self._cmd_params(update, context)
             return
 
@@ -2106,28 +2108,75 @@ class TelegramNewsBot:
             await update.message.reply_text(f"❌ Fehler: `{_esc(result['error'])}`", parse_mode=ParseMode.MARKDOWN_V2)
 
     async def _cmd_params(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Zeigt aktuelle Parameter eines Bots."""
+        """Zeigt Parameter aller aktiven Bots (oder eines bestimmten) inkl. Supervisor-Empfehlungen."""
         if not self._is_authorized(update):
             await self._unauthorized(update)
             return
-        if not context.args:
-            await update.message.reply_text(
-                "Verwendung: `/params BTC/EUR`", parse_mode=ParseMode.MARKDOWN_V2
-            )
-            return
-        symbol = " ".join(context.args).upper().strip()
+
         try:
             resp = requests.get(f"{self.cfg.web_api_base}/api/bots", timeout=5)
-            bots = {b["symbol"]: b for b in resp.json()}
-            if symbol not in bots:
+            all_bots = {b["symbol"]: b for b in resp.json() if "error" not in b}
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+
+        if context.args:
+            symbol = " ".join(context.args).upper().strip()
+            if symbol not in all_bots:
                 await update.message.reply_text(
                     f"❌ Bot *{_esc(symbol)}* nicht gefunden\\.", parse_mode=ParseMode.MARKDOWN_V2
                 )
                 return
-            b   = bots[symbol]
-            st  = b.get("state", {})
+            target_bots = [all_bots[symbol]]
+        else:
+            target_bots = sorted(
+                [b for b in all_bots.values() if b.get("process_running")],
+                key=lambda b: b["symbol"],
+            )
+            if not target_bots:
+                await update.message.reply_text(
+                    "ℹ️ Keine aktiven Bots gefunden\\.", parse_mode=ParseMode.MARKDOWN_V2
+                )
+                return
 
-            # Feature-Strings
+        from datetime import datetime, timezone, timedelta
+
+        def _next_run(sup_last: str, interval_s: int = 300) -> str:
+            if not sup_last:
+                return "–"
+            try:
+                last_dt = datetime.fromisoformat(sup_last.replace("Z", "+00:00"))
+                diff_s  = (last_dt + timedelta(seconds=interval_s) - datetime.now(timezone.utc)).total_seconds()
+                if diff_s <= 0:
+                    return "jetzt"
+                m, s = divmod(int(diff_s), 60)
+                return f"in {m}min {s}s" if m else f"in {s}s"
+            except Exception:
+                return "–"
+
+        def _ago(sup_last: str) -> str:
+            if not sup_last:
+                return "–"
+            try:
+                diff_s = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                    sup_last.replace("Z", "+00:00")
+                )).total_seconds()
+                if diff_s < 60:
+                    return f"vor {int(diff_s)}s"
+                if diff_s < 3600:
+                    return f"vor {int(diff_s/60)}min"
+                return f"vor {int(diff_s/3600)}h"
+            except Exception:
+                return "–"
+
+        sections = []
+        for b in target_bots:
+            st     = b.get("state", {})
+            symbol = b["symbol"]
+
+            # --- Aktive Parameter ---
             trail_on  = st.get("use_trailing_sl", "False") == "True"
             trail_pct = float(st.get("trailing_sl_pct", "0.02") or "0.02") * 100
             be_on     = st.get("breakeven_enabled", "False") == "True"
@@ -2136,64 +2185,113 @@ class TelegramNewsBot:
             vol_fac   = st.get("volume_factor", "1.2")
             ptp_on    = st.get("partial_tp_enabled", "False") == "True"
             ptp_frac  = int(float(st.get("partial_tp_fraction", "0.5") or "0.5") * 100)
-            htf_tf    = st.get("htf_timeframe", "")
             buf       = float(st.get("safety_buffer_pct", "0.10") or "0.10") * 100
             cooldown  = st.get("sl_cooldown_candles", "3")
             paused    = st.get("paused", "false").lower() == "true"
+            cur_fast  = st.get("fast_period", "?")
+            cur_slow  = st.get("slow_period", "?")
+            sl_pct    = float(st.get("sl_pct", 0.03)) * 100
+            tp_pct    = float(st.get("tp_pct", 0.06)) * 100
 
             trail_str = f"✅ {trail_pct:.1f}%" if trail_on else "❌ aus"
             be_str    = f"✅ {be_pct:.1f}%"    if be_on    else "❌ aus"
             vol_str   = f"✅ ×{vol_fac}"        if vol_on   else "❌ aus"
             ptp_str   = f"✅ {ptp_frac}%"       if ptp_on   else "❌ aus"
-            htf_str   = f"✅ {htf_tf} \\({st.get('htf_fast','9')}/{st.get('htf_slow','21')}\\)" if htf_tf else "❌ aus"
+
+            status_icon = "▶️" if b.get("process_running") else "⏹"
+            paused_str  = " ⏸ Pausiert" if paused else ""
+
+            # --- Supervisor-Empfehlung ---
+            sup_fast    = st.get("supervisor_fast", "")
+            sup_slow    = st.get("supervisor_slow", "")
+            sup_trail   = st.get("supervisor_use_trailing_sl", "False").lower() in ("true", "1")
+            sup_vol     = st.get("supervisor_volume_filter",   "False").lower() in ("true", "1")
+            sup_strat   = st.get("supervisor_strategy_name", "–")
+            sup_sqn     = st.get("supervisor_sqn", "–")
+            sup_pnl     = st.get("supervisor_sim_pnl", "–")
+            sup_trades  = st.get("supervisor_sim_trades", "–")
+            sup_atr_sl  = st.get("supervisor_atr_sl_mult", "–")
+            sup_atr_tp  = st.get("supervisor_atr_tp_mult", "–")
+            sup_rsi_buy = st.get("supervisor_rsi_buy_max", "–")
+            sup_rsi_sel = st.get("supervisor_rsi_sell_min", "–")
+            sup_last    = st.get("supervisor_last_update", "")
+            regime      = b.get("regime", "–")
+            sup_adx     = st.get("supervisor_adx", "–")
+            sup_atr_pct = st.get("supervisor_atr_pct", "–")
+
+            # ✅ = Empfehlung bereits umgesetzt, ⚠️ = weicht ab
+            sma_diff_f = "✅" if sup_fast and str(cur_fast) == str(sup_fast) else "⚠️"
+            sma_diff_s = "✅" if sup_slow and str(cur_slow) == str(sup_slow) else "⚠️"
+            trail_diff = "✅" if trail_on == sup_trail else "⚠️"
+            vol_diff   = "✅" if vol_on   == sup_vol   else "⚠️"
 
             lines = [
-                f"⚙️ *Parameter: {_esc(symbol)}*\n",
-                f"Timeframe: `{_esc(st.get('timeframe','5m'))}` \\| SMA: Fast `{st.get('fast_period','?')}` / Slow `{st.get('slow_period','?')}`",
-                f"Regime:    `{_esc(b.get('regime','–'))}` \\| ADX: `{st.get('supervisor_adx','–')}` \\| ATR%: `{st.get('supervisor_atr_pct','–')}`",
-                f"RSI:       Kauf\\-Max `{st.get('supervisor_rsi_buy_max', st.get('rsi_buy_max','?'))}` "
-                f"\\| Verk\\.\\-Min `{st.get('supervisor_rsi_sell_min', st.get('rsi_sell_min','?'))}`",
-                f"ATR\\-Mult: SL `×{st.get('supervisor_atr_sl_mult','?')}` \\| TP `×{st.get('supervisor_atr_tp_mult','?')}`",
-                f"Strategie: `{_esc(b.get('strategy_name','–'))}` \\(Sim\\-P&L: `{_esc(str(b.get('sim_pnl','–')))}%`\\)",
-                f"",
-                f"SL/TP \\(Fallback\\): `{float(st.get('sl_pct',0.03))*100:.1f}%` / `{float(st.get('tp_pct',0.06))*100:.1f}%`",
-                f"Trailing SL:  {_esc(trail_str)}",
-                f"Breakeven SL: {_esc(be_str)}",
-                f"SL\\-Cooldown: `{cooldown}` Candles",
-                f"",
-                f"Volumen\\-Filter: {_esc(vol_str)}",
-                f"Partial TP:     {_esc(ptp_str)}",
-                f"HTF\\-Filter:    {htf_str}",
-                f"Safety Buffer:  `{buf:.1f}%`",
+                f"{status_icon} *{_esc(symbol)}*{_esc(paused_str)}",
+                "",
+                f"*⚙️ Aktive Parameter*",
+                f"Timeframe: `{_esc(st.get('timeframe','5m'))}` \\| SMA: `{cur_fast}` / `{cur_slow}`",
+                f"Regime: `{_esc(regime)}` \\| ADX: `{_esc(str(sup_adx))}` \\| ATR%: `{_esc(str(sup_atr_pct))}`",
+                f"RSI: Buy\\-Max `{_esc(str(st.get('supervisor_rsi_buy_max', st.get('rsi_buy_max','?'))))}` "
+                f"\\| Sell\\-Min `{_esc(str(st.get('supervisor_rsi_sell_min', st.get('rsi_sell_min','?'))))}`",
+                f"ATR\\-Mult: SL `×{_esc(str(st.get('supervisor_atr_sl_mult','?')))}` "
+                f"\\| TP `×{_esc(str(st.get('supervisor_atr_tp_mult','?')))}`",
+                f"SL/TP \\(Fallback\\): `{sl_pct:.1f}%` / `{tp_pct:.1f}%` \\| Buffer: `{buf:.1f}%`",
+                f"Trailing: {_esc(trail_str)} \\| Breakeven: {_esc(be_str)}",
+                f"Volumen: {_esc(vol_str)} \\| Partial TP: {_esc(ptp_str)} \\| Cooldown: `{cooldown}`",
             ]
-            if paused:
-                lines.append(f"Status: ⏸ *Pausiert* \\(keine neuen Käufe\\)")
 
-            # Sentiment-Filter
+            # Supervisor-Empfehlung nur zeigen wenn Daten vorhanden
+            if sup_strat != "–" or sup_fast:
+                trail_rec = "an" if sup_trail else "aus"
+                vol_rec   = "an" if sup_vol   else "aus"
+                lines += [
+                    "",
+                    f"*🔮 Supervisor\\-Empfehlung*",
+                    f"Strategie: `{_esc(sup_strat)}` \\| SQN: `{_esc(str(sup_sqn))}`",
+                    f"Sim\\-P&L: `{_esc(str(sup_pnl))}%` \\| Trades: `{_esc(str(sup_trades))}`",
+                    f"SMA: {sma_diff_f}`{_esc(str(sup_fast))}` / {sma_diff_s}`{_esc(str(sup_slow))}`",
+                    f"ATR\\-Mult: SL `×{_esc(str(sup_atr_sl))}` \\| TP `×{_esc(str(sup_atr_tp))}`",
+                    f"RSI: Buy\\-Max `{_esc(str(sup_rsi_buy))}` \\| Sell\\-Min `{_esc(str(sup_rsi_sel))}`",
+                    f"Trailing: {trail_diff} `{_esc(trail_rec)}` \\| Volumen\\-Filter: {vol_diff} `{_esc(vol_rec)}`",
+                ]
+                if sup_last:
+                    lines.append(
+                        f"🕐 Letzter Lauf: `{_esc(_ago(sup_last))}` "
+                        f"\\| Nächster: `{_esc(_next_run(sup_last))}`"
+                    )
+
+            # Sentiment (kompakt)
             s_score_raw = st.get("current_sentiment_score", "")
             s_score     = float(s_score_raw) if s_score_raw else None
-            sb_on   = st.get("sentiment_buy_enabled",    "False") == "True"
-            sb_min  = float(st.get("sentiment_buy_min",        "0.1")  or "0.1")
-            ss_on   = st.get("sentiment_sell_enabled",   "False") == "True"
-            ss_max  = float(st.get("sentiment_sell_max",       "-0.3") or "-0.3")
-            ss_mode = st.get("sentiment_sell_mode", "block")
-            st_on   = st.get("sentiment_stop_enabled",   "False") == "True"
-            st_thr  = float(st.get("sentiment_stop_threshold", "-0.5") or "-0.5")
-            mode_lbl = {"block": "BUY sperren", "close": "Pos\\. schließen", "both": "Schließen\\+sperren"}
+            sb_on  = st.get("sentiment_buy_enabled",    "False") == "True"
+            sb_min = float(st.get("sentiment_buy_min",   "0.1")  or "0.1")
+            ss_on  = st.get("sentiment_sell_enabled",   "False") == "True"
+            ss_max = float(st.get("sentiment_sell_max", "-0.3")  or "-0.3")
+            st_on  = st.get("sentiment_stop_enabled",   "False") == "True"
+            st_thr = float(st.get("sentiment_stop_threshold", "-0.5") or "-0.5")
             if s_score is not None:
                 s_emoji = "📈" if s_score >= 0.1 else ("📉" if s_score <= -0.1 else "⚖️")
                 s_str = f"`{s_score:+.3f}` {s_emoji}"
             else:
-                s_str = "– \\(kein Score\\)"
+                s_str = "–"
             lines += [
                 "",
-                f"📰 *Sentiment\\-Filter*",
-                f"Akt\\. Score:    {s_str}",
-                f"BUY\\-Gate:     {'✅ ≥ ' + _esc(f'{sb_min:+.2f}') if sb_on else '❌ aus'}",
-                f"SELL\\-Trigger: {'✅ ≤ ' + _esc(f'{ss_max:+.2f}') + ' \\(' + mode_lbl.get(ss_mode, _esc(ss_mode)) + '\\)' if ss_on else '❌ aus'}",
-                f"Auto\\-Stop:    {'✅ ≤ ' + _esc(f'{st_thr:+.2f}') if st_on else '❌ aus'}",
+                f"📰 Score: {s_str} "
+                f"\\| BUY: {'✅≥' + _esc(f'{sb_min:+.2f}') if sb_on else '❌'} "
+                f"\\| SELL: {'✅≤' + _esc(f'{ss_max:+.2f}') if ss_on else '❌'} "
+                f"\\| Stop: {'✅≤' + _esc(f'{st_thr:+.2f}') if st_on else '❌'}",
             ]
-            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN_V2)
+
+            sections.append("\n".join(lines))
+
+        sep  = "\n\n`──────────────────`\n\n"
+        full = sep.join(sections)
+        try:
+            if len(full) <= 4000:
+                await update.message.reply_text(full, parse_mode=ParseMode.MARKDOWN_V2)
+            else:
+                for s in sections:
+                    await update.message.reply_text(s, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             await update.message.reply_text(
                 f"❌ Fehler: {_esc(str(e))}", parse_mode=ParseMode.MARKDOWN_V2

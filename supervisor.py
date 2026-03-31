@@ -35,10 +35,14 @@ from bot import optimizer, notify
 from bot.optimizer import RSI_ATR_COMBOS
 
 FEATURE_COMBOS = [
-    {"use_trailing_sl": False, "volume_filter": False},
-    {"use_trailing_sl": True,  "volume_filter": False},
-    {"use_trailing_sl": False, "volume_filter": True},
-    {"use_trailing_sl": True,  "volume_filter": True},
+    {"use_trailing_sl": False, "volume_filter": False, "sma200_filter": False, "slope_filter": False},
+    {"use_trailing_sl": True,  "volume_filter": False, "sma200_filter": False, "slope_filter": False},
+    {"use_trailing_sl": False, "volume_filter": True,  "sma200_filter": False, "slope_filter": False},
+    {"use_trailing_sl": True,  "volume_filter": True,  "sma200_filter": False, "slope_filter": False},
+    {"use_trailing_sl": False, "volume_filter": True,  "sma200_filter": True,  "slope_filter": False},
+    {"use_trailing_sl": True,  "volume_filter": True,  "sma200_filter": True,  "slope_filter": False},
+    {"use_trailing_sl": False, "volume_filter": True,  "sma200_filter": True,  "slope_filter": True},
+    {"use_trailing_sl": True,  "volume_filter": True,  "sma200_filter": True,  "slope_filter": True},
 ]
 
 
@@ -194,6 +198,9 @@ def _write(
             db.set_state("supervisor_val_pnl",     f"{best['val_pnl']:+.2f}")
         db.set_state("supervisor_use_trailing_sl", str(best.get("use_trailing_sl", False)))
         db.set_state("supervisor_volume_filter",   str(best.get("volume_filter", False)))
+        db.set_state("supervisor_sma200_filter",   str(best.get("sma200_filter", False)))
+        db.set_state("supervisor_slope_filter",    str(best.get("slope_filter",  False)))
+        db.set_state("supervisor_htf_filter",      str(best.get("htf_filter",    False)))
         db.log_supervisor_cycle(
             regime=regime,
             adx=adx_val,
@@ -574,9 +581,20 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
             inserted = cdb.upsert_candles(conn_c, symbol, timeframe, fresh_candles)
             log.debug(f"{symbol}: {inserted} neue Candles gecacht")
 
+            # 1h-Candles aktualisieren + cachen
+            try:
+                htf_fresh = exchange.fetch_ohlcv(symbol, "1h", limit=100)
+                cdb.upsert_candles(conn_c, symbol, "1h", htf_fresh)
+            except Exception as e:
+                log.warning(f"{symbol}: 1h-Candles Fehler – {e}")
+
             # Historische Candles für Optimierung laden (wächst über Zeit auf 2000)
             history = cdb.load_candles(conn_c, symbol, timeframe, limit=2000)
             log.debug(f"{symbol}: {len(history)} Candles für Optimierung verfügbar")
+
+            # 1h-Candles für HTF-Filter laden
+            htf_history = cdb.load_candles(conn_c, symbol, "1h", limit=300)
+            log.debug(f"{symbol}: {len(htf_history)} 1h-Candles für HTF-Filter")
 
             # Walk-Forward: 80% Training / 20% Validation
             MIN_WF_CANDLES = 200
@@ -589,16 +607,22 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
             # 72-Varianten-Optimierung (3 RSI/ATR × 6 SMA × 4 Feature-Kombos)
             tmpl = REGIME_TEMPLATES[regime]
             all_candidates = []
+            # 1h-History für HTF-Filter (train-Anteil: gleiche zeitliche Abdeckung)
+            htf_train = htf_history[:int(len(htf_history) * 0.8)] if htf_history else None
+
             for combo in FEATURE_COMBOS:
                 candidate = optimizer.best_variant(
                     train,
                     rsi_atr_variants=RSI_ATR_COMBOS[regime],
+                    htf_candles=htf_train,
                     **combo,
                 )
                 all_candidates.append(candidate)
             best = max(all_candidates, key=lambda x: (x.get("sqn", 0), x["pnl_pct"]))
 
             # Walk-Forward Validation
+            htf_val = htf_history[int(len(htf_history) * 0.8):] if htf_history else None
+
             if val:
                 val_r = optimizer.simulate(
                     val, best["fast"], best["slow"],
@@ -606,6 +630,9 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
                     atr_sl_mult=best["atr_sl_mult"],  atr_tp_mult=best["atr_tp_mult"],
                     use_trailing_sl=best.get("use_trailing_sl", False),
                     volume_filter=best.get("volume_filter", False),
+                    sma200_filter=best.get("sma200_filter", False),
+                    slope_filter=best.get("slope_filter", False),
+                    htf_candles=htf_val,
                 )
                 best["val_pnl"] = val_r["pnl_pct"] if val_r else None
                 if best["val_pnl"] is not None:
@@ -623,6 +650,7 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
                 "regime":   regime,
                 "best":     best,
                 "candles":  history,
+                "htf":      htf_history,
                 "db_path":  db_path,
             }
 
@@ -656,11 +684,12 @@ def main():
 
     exchange = build_exchange(ExchangeConfig())
 
-    # Einmaliger Backfill beim Start
+    # Einmaliger Backfill beim Start (5m + 1h)
     candles_db_path = os.path.join(args.db_dir, "candles.db")
     conn_init = cdb.open_db(candles_db_path)
     for sym in _collect_symbols(args.db_dir):
         _backfill_candles(exchange, conn_init, sym, args.timeframe)
+        _backfill_candles(exchange, conn_init, sym, "1h", target=500, batch=200)
     conn_init.close()
 
     try:

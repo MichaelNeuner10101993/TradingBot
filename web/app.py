@@ -722,10 +722,10 @@ def _update_conf_args(symbol_safe: str, data: dict):
             "sl_pct":               ("--sl",                 100),
             "tp_pct":               ("--tp",                 100),
             "safety_buffer":        ("--safety-buffer",      100),
-            "trailing_sl_pct":      ("--trailing-sl-pct",    1),
-            "volume_factor":        ("--volume-factor",       1),
-            "breakeven_pct":        ("--breakeven-pct",       1),
-            "partial_tp_fraction":  ("--partial-tp-fraction", 1),
+            "trailing_sl_pct":      ("--trailing-sl-pct",    100),
+            "volume_factor":        ("--volume-factor",         1),
+            "breakeven_pct":        ("--breakeven-pct",       100),
+            "partial_tp_fraction":  ("--partial-tp-fraction", 100),
         }
         for key, (flag, div) in ARG_MAP.items():
             val = data.get(key)
@@ -777,10 +777,10 @@ def api_set_runtime_params():
         written = []
 
         # Boolean/Float-Keys direkt als pending_ speichern
-        for key in ("breakeven_enabled", "breakeven_pct",
-                    "trailing_sl", "trailing_sl_pct",
+        for key in ("breakeven_enabled",
+                    "trailing_sl",
                     "volume_filter", "volume_factor",
-                    "partial_tp", "partial_tp_fraction",
+                    "partial_tp",
                     "rsi_buy_max", "rsi_sell_min",
                     "fast_period", "slow_period",
                     "sentiment_buy_enabled", "sentiment_buy_min",
@@ -791,8 +791,8 @@ def api_set_runtime_params():
                 db.set_state(f"pending_{key}", str(val))
                 written.append(key)
 
-        # SL/TP: UI sendet %, Bot erwartet Fraktion (0.03 statt 3)
-        for key in ("sl_pct", "tp_pct"):
+        # SL/TP + Trailing/Breakeven + Partial-TP: UI sendet %, Bot erwartet Fraktion (0.03 statt 3)
+        for key in ("sl_pct", "tp_pct", "trailing_sl_pct", "breakeven_pct", "partial_tp_fraction"):
             val = data.get(key)
             if val is not None:
                 db.set_state(f"pending_{key}", str(float(val) / 100))

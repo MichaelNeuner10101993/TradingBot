@@ -100,11 +100,17 @@ def get_signal(
     rsi_sell_min: float = 35.0,
     volume_filter: bool = False,
     volume_factor: float = 1.2,
+    sma200_filter: bool = False,
+    slope_filter: bool = False,
+    slope_lookback: int = 20,
+    slope_min_pct: float = -0.15,
 ) -> tuple[Signal, float, float | None]:
     """
     Gibt (Signal, letzter Close-Preis, RSI-Wert) zurück.
     RSI filtert überkaufte BUY- und überverkaufte SELL-Signale heraus.
     Optionaler Volumen-Filter: Signal nur wenn letztes Volumen > volume_factor × Avg(20).
+    Optionaler SMA200-Filter: BUY nur wenn Preis > SMA200 (Aufwärtstrend langfristig).
+    Optionaler Slope-Filter: BUY nur wenn Slow-SMA nicht stark fällt (> slope_min_pct %).
     candles: Liste von [timestamp, open, high, low, close, volume]
     """
     closes     = [c[4] for c in candles]
@@ -134,5 +140,33 @@ def get_signal(
             signal = "HOLD"
         else:
             log.debug(f"Volumen-Filter OK: {last_vol:.2f} >= {threshold:.2f}")
+
+    # SMA200-Filter: BUY nur wenn Preis über der 200-Perioden-SMA (langfristiger Aufwärtstrend)
+    if sma200_filter and signal == "BUY" and len(candles) >= 201:
+        arr        = np.asarray(closes, dtype=float)
+        sma200_arr = _sma_arr(arr, 200)
+        s200       = sma200_arr[-1]
+        if not np.isnan(s200) and last_price < s200:
+            log.info(
+                f"BUY gefiltert: Preis {last_price:.4g} < SMA200 {s200:.4g} "
+                f"(Abwärtstrend – kein Kauf gegen langfristigen Trend)"
+            )
+            signal = "HOLD"
+
+    # Slope-Filter: BUY nur wenn Slow-SMA nicht stark fällt
+    if slope_filter and signal == "BUY" and len(candles) >= slow + slope_lookback + 1:
+        arr      = np.asarray(closes, dtype=float)
+        slow_arr = _sma_arr(arr, slow)
+        valid    = slow_arr[~np.isnan(slow_arr)]
+        if len(valid) > slope_lookback:
+            ref = valid[-(slope_lookback + 1)]
+            if ref > 0:
+                slope_pct = (valid[-1] - ref) / ref * 100
+                if slope_pct < slope_min_pct:
+                    log.info(
+                        f"BUY gefiltert: SMA{slow}-Slope={slope_pct:+.3f}% < {slope_min_pct}% "
+                        f"über {slope_lookback} Candles (fallende Trendlinie)"
+                    )
+                    signal = "HOLD"
 
     return signal, last_price, rsi_val

@@ -57,6 +57,10 @@ def parse_args():
     p.add_argument("--htf-timeframe",     default="",                 help="HTF-Timeframe für Trendfilter (z.B. 1h), leer = deaktiviert")
     p.add_argument("--htf-fast",          type=int,   default=None,   help="HTF Fast-SMA-Periode (default: 9)")
     p.add_argument("--htf-slow",          type=int,   default=None,   help="HTF Slow-SMA-Periode (default: 21)")
+    p.add_argument("--sma200-filter",     action="store_true",        help="BUY nur wenn Preis über SMA200 (langfristiger Aufwärtstrend)")
+    p.add_argument("--slope-filter",      action="store_true",        help="BUY nur wenn Slow-SMA nicht stark fällt")
+    p.add_argument("--slope-lookback",    type=int,   default=None,   help="Lookback-Candles für Slope-Filter (default: 20)")
+    p.add_argument("--slope-min-pct",     type=float, default=None,   help="Min. Slope %% für BUY (default: -0.15)")
     return p.parse_args()
 
 
@@ -103,6 +107,10 @@ def main():
     if args.htf_timeframe:                  bot_cfg.htf_timeframe       = args.htf_timeframe
     if args.htf_fast is not None:           bot_cfg.htf_fast            = args.htf_fast
     if args.htf_slow is not None:           bot_cfg.htf_slow            = args.htf_slow
+    if args.sma200_filter:                  risk_cfg.sma200_filter      = True
+    if args.slope_filter:                   risk_cfg.slope_filter       = True
+    if args.slope_lookback is not None:     risk_cfg.slope_lookback     = args.slope_lookback
+    if args.slope_min_pct is not None:      risk_cfg.slope_min_pct      = args.slope_min_pct
 
     # DB-Verzeichnis für Bot-Zählung
     risk_cfg.db_dir = os.path.dirname(ops_cfg.db_path) or "db"
@@ -266,6 +274,10 @@ def main():
                     risk_cfg.rsi_sell_min,
                     volume_filter=risk_cfg.volume_filter,
                     volume_factor=risk_cfg.volume_factor,
+                    sma200_filter=risk_cfg.sma200_filter,
+                    slope_filter=risk_cfg.slope_filter,
+                    slope_lookback=risk_cfg.slope_lookback,
+                    slope_min_pct=risk_cfg.slope_min_pct,
                 )
                 rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "–"
 
@@ -549,6 +561,8 @@ def main():
                 db.set_state("htf_timeframe",          bot_cfg.htf_timeframe)
                 db.set_state("htf_fast",               str(bot_cfg.htf_fast))
                 db.set_state("htf_slow",               str(bot_cfg.htf_slow))
+                db.set_state("sma200_filter",          str(risk_cfg.sma200_filter))
+                db.set_state("slope_filter",           str(risk_cfg.slope_filter))
                 db.set_state("sentiment_buy_enabled",    str(risk_cfg.sentiment_buy_enabled))
                 db.set_state("sentiment_buy_min",        str(risk_cfg.sentiment_buy_min))
                 db.set_state("sentiment_sell_enabled",   str(risk_cfg.sentiment_sell_enabled))

@@ -42,7 +42,15 @@ def calc_levels(
                 f"| SL={sl_price:.6f} (-{sl_pct:.2f}%) "
                 f"| TP={tp_price:.6f} (+{tp_pct:.2f}%)"
             )
-            return sl_price, tp_price
+            # Wenn ATR-basierter SL zu eng ist (Markt zu ruhig für Fee-Gate),
+            # auf feste Prozentsätze zurückfallen
+            if sl_pct < cfg.stop_loss_pct * 100:
+                log.info(
+                    f"ATR-SL ({sl_pct:.2f}%) enger als Fixed-SL "
+                    f"({cfg.stop_loss_pct*100:.1f}%) – Fallback auf feste Prozentsätze"
+                )
+            else:
+                return sl_price, tp_price
 
     # Fallback: feste Prozentsätze
     sl_price = entry_price * (1 - cfg.stop_loss_pct)

@@ -1059,3 +1059,62 @@ bash /tmp/install.sh
 - `NoNewPrivileges=true` in Bot-Services
 - `/etc/sudoers.d/tradingbot`: User darf `systemctl stop|start|restart tradingbot@*` ohne Passwort
 - Supervisor schreibt nur `supervisor_*`-Keys in Bot-DBs, greift nie in Orders ein
+
+---
+
+## Changelog
+
+### 2026-03-31 — Migration auf CAT-TRADING + Parameter-Optimierung
+
+**Infrastruktur:**
+- Bot migriert von CAT (Raspberry Pi) → CAT-TRADING (LXC CT 101 auf CAT-MAMA / Proxmox VE 9.1)
+- CAT-TRADING: 192.168.2.101, 4 Cores, 2GB RAM, Debian 12
+- Web-Dashboard: http://192.168.2.101:5001
+
+**Parameter-Anpassungen (nach Datenanalyse, 34 Trades):**
+
+| Parameter | Alt | Neu | Begründung |
+|---|---|---|---|
+|  | 3% | 1.5% | Max-Verlust halbiert, viele 3%-SL-Treffer |
+|  | 4% | 0.8% | SL→Breakeven sobald Gebühren gedeckt (~0.52% RT) |
+|  | 5% | 2-3% | Gewinne früher sichern |
+|  | 1.2 | 1.5 | Strengere Volumen-Anforderung |
+|  ETH | fehlte | hinzugefügt | ETH hatte 0% Win-Rate |
+
+**Bekanntes Problem:**
+-  berücksichtigt keine Trading-Gebühren (~0.52% pro Round-Trip)
+- Optimizer wählt dadurch Strategien die real verlieren (viele kleine Wins < Gebühren)
+- **TODO:**  Parameter in  einbauen
+
+
+---
+
+## Changelog
+
+### 2026-03-31 — Migration auf CAT-TRADING + Parameter-Optimierung
+
+**Infrastruktur:**
+- Bot migriert von CAT (Raspberry Pi) auf CAT-TRADING (LXC CT 101, CAT-MAMA Proxmox 9.1)
+- CAT-TRADING: 192.168.2.101, 4 Cores, 2GB RAM, Debian 12
+- Web-Dashboard: http://192.168.2.101:5001
+
+**Parameter-Anpassungen nach Datenanalyse (34 Trades, WR 26%, P&L -7.11 EUR):**
+- --sl: 3% -> 1.5% (Max-Verlust halbiert, viele 3%-SL-Treffer in Daten)
+- --breakeven-pct: 4% -> 0.8% (SL ab Breakeven wenn Gebuehren gedeckt, ~0.52% RT)
+- --trailing-sl-pct: 5% -> 2-3% (Gewinne frueher sichern)
+- --volume-factor: 1.2 -> 1.5 (strengere Volumen-Anforderung)
+- ETH: --volume-filter hinzugefuegt (hatte 0% Win-Rate)
+
+**Bekanntes offenes Problem:**
+- bot/optimizer.py simulate() beruecksichtigt keine Trading-Gebuehren (~0.52% pro Round-Trip)
+- Optimizer waehlt dadurch Strategien die real verlieren (kleine Wins < Gebuehren)
+- TODO: fee_rate=0.0026 Parameter in simulate() einbauen
+
+
+### 2026-03-31 — Optimizer: SMA200 + Slope-Filter in Simulation
+
+- `bot/optimizer.py`: `simulate()` und `best_variant()` um `sma200_filter` und `slope_filter` erweitert
+- `supervisor.py`: FEATURE_COMBOS von 4 auf 8 Kombinationen erweitert (inkl. sma200+slope)
+- Supervisor speichert `supervisor_sma200_filter` und `supervisor_slope_filter` in DB
+- Effekt: Optimizer bewertet jetzt Strategien unter realistischeren Live-Bedingungen
+- Backup: bot/optimizer.py.bak

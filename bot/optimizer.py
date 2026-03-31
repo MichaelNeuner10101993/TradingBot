@@ -125,6 +125,13 @@ def simulate(
     trailing_sl_pct: float = 0.02,
     volume_filter: bool = False,
     volume_factor: float = 1.2,
+    sma200_filter: bool = False,
+    slope_filter: bool = False,
+    slope_lookback: int = 20,
+    slope_min_pct: float = -0.15,
+    htf_candles: list | None = None,
+    htf_fast: int = 21,
+    htf_slow: int = 55,
 ) -> dict | None:
     """
     Simuliert eine Strategie auf historischen Candles.
@@ -144,6 +151,20 @@ def simulate(
     sma_s = _sma_series(closes, slow)
     rsi_v = _rsi_series(closes, rsi_period)
     atr_v = _atr_series(highs, lows, closes, atr_period)
+
+    # HTF-Lookup: 1h-Timestamp → bullisch (fast_sma > slow_sma)
+    # Timestamp-Alignment: 5m ts_ms → floor auf 1h: (ts // 3_600_000) * 3_600_000
+    htf_bullish: dict[int, bool] = {}
+    if htf_candles and len(htf_candles) >= htf_slow + 1:
+        htf_closes = [c[4] for c in htf_candles]
+        htf_sf     = _sma_series(htf_closes, htf_fast)
+        htf_ss     = _sma_series(htf_closes, htf_slow)
+        for idx, c in enumerate(htf_candles):
+            sf = htf_sf[idx]
+            ss = htf_ss[idx]
+            if sf is not None and ss is not None:
+                hour_ts = int(c[0] // 3_600_000) * 3_600_000
+                htf_bullish[hour_ts] = sf > ss
 
     capital  = 1000.0
     position = None
@@ -198,8 +219,32 @@ def simulate(
                 avg_vol = sum(volumes[i - 20:i]) / 20
                 vol_ok  = volumes[i] >= avg_vol * volume_factor
 
+            # HTF-Filter: BUY nur wenn 1h-SMA bullisch ausgerichtet
+            htf_ok = True
+            if htf_candles and htf_bullish:
+                hour_ts = int(candles[i][0] // 3_600_000) * 3_600_000
+                # Letzten bekannten HTF-Wert suchen (aktuelle oder vorherige Stunde)
+                htf_ok = htf_bullish.get(hour_ts,
+                         htf_bullish.get(hour_ts - 3_600_000, True))
+
+            # SMA200-Filter: BUY nur wenn Preis über SMA200
+            sma200_ok = True
+            if sma200_filter and i >= 200:
+                sma200 = sum(closes[i - 200:i]) / 200
+                if price < sma200:
+                    sma200_ok = False
+
+            # Slope-Filter: BUY nur wenn Slow-SMA nicht stark fällt
+            slope_ok = True
+            if slope_filter and i >= slow + slope_lookback:
+                ref_sma = sma_s[i - slope_lookback]
+                if ref_sma and ref_sma > 0 and ss_cur:
+                    slope_pct = (ss_cur - ref_sma) / ref_sma * 100
+                    if slope_pct < slope_min_pct:
+                        slope_ok = False
+
             # BUY-Crossover
-            if vol_ok and sf_cur > ss_cur and sf_prv <= ss_prv and rsi_cur < rsi_buy_max:
+            if vol_ok and htf_ok and sma200_ok and slope_ok and sf_cur > ss_cur and sf_prv <= ss_prv and rsi_cur < rsi_buy_max:
                 sl = price - atr_sl_mult * atr_cur
                 tp = price + atr_tp_mult * atr_cur
                 position = {"entry": price, "sl": sl, "tp": tp}
@@ -245,6 +290,11 @@ def best_variant(
     trailing_sl_pct: float = 0.02,
     volume_filter: bool = False,
     volume_factor: float = 1.2,
+    sma200_filter: bool = False,
+    slope_filter: bool = False,
+    htf_candles: list | None = None,
+    htf_fast: int = 21,
+    htf_slow: int = 55,
 ) -> dict:
     """
     Testet alle SMA-Varianten × RSI/ATR-Kombos und gibt die beste zurück.
@@ -266,12 +316,20 @@ def best_variant(
                 trailing_sl_pct=trailing_sl_pct,
                 volume_filter=volume_filter,
                 volume_factor=volume_factor,
+                sma200_filter=sma200_filter,
+                slope_filter=slope_filter,
+                htf_candles=htf_candles,
+                htf_fast=htf_fast,
+                htf_slow=htf_slow,
             )
             if r is None:
                 continue
             results.append({**v, **ra, **r,
                              "use_trailing_sl": use_trailing_sl,
-                             "volume_filter":   volume_filter})
+                             "volume_filter":   volume_filter,
+                             "sma200_filter":   sma200_filter,
+                             "slope_filter":    slope_filter,
+                             "htf_filter":      htf_candles is not None})
             logger.debug(
                 "Variante %-8s (f=%2d s=%2d) rsi_buy=%.0f trailing=%s vol=%s: "
                 "P&L=%+.2f%% Trades=%d SQN=%.2f",
@@ -289,7 +347,9 @@ def best_variant(
         logger.warning("Kein Ergebnis (zu wenig Daten) – Fallback: Standard")
         return {**fallback, **RSI_ATR_COMBOS["BULL"][1],
                 "pnl_pct": 0.0, "num_trades": 0, "win_rate": 0.0, "sqn": 0.0,
-                "use_trailing_sl": use_trailing_sl, "volume_filter": volume_filter}
+                "use_trailing_sl": use_trailing_sl, "volume_filter": volume_filter,
+                "sma200_filter": sma200_filter, "slope_filter": slope_filter,
+                "htf_filter": htf_candles is not None}
 
     pool.sort(key=lambda x: (x.get("sqn", 0), x["pnl_pct"]), reverse=True)
     best = pool[0]
