@@ -55,7 +55,8 @@ def _collect_symbols(db_dir: str) -> list[str]:
     """Liest Symbol aus allen Bot-DBs (außer candles.db / news.db)."""
     symbols = []
     for db_path in sorted(glob(os.path.join(db_dir, "*.db"))):
-        if os.path.basename(db_path) in ("candles.db", "news.db"):
+        bn = os.path.basename(db_path)
+        if bn in ("candles.db", "news.db", "scanner.db", "supervisor.db") or bn.startswith("grid_"):
             continue
         try:
             db  = StateDB(db_path)
@@ -528,13 +529,64 @@ def _peer_learning(results: dict, dry_run: bool):
                 log.error(f"Peer-Learning DB-Schreibfehler ({data['db_path']}): {e}")
 
 
+WEB_API = os.getenv("SUPERVISOR_WEB_API", "http://localhost:5001")
+# Nur diese Coins werden automatisch auf Grid-Bot umgeschaltet
+# Leer lassen = Feature deaktiviert (Scanner-Coins nicht anfassen)
+GRID_MANAGED_SYMBOLS: set[str] = set(os.getenv("SUPERVISOR_GRID_SYMBOLS", "").split(",")) - {""} 
+GRID_REGIMES  = {"SIDEWAYS"}             # Grid-Bot sinnvoll
+TREND_REGIMES = {"BULL", "VOLATILE"}  # SMA-Crossover sinnvoll
+PAUSE_REGIMES = {"BEAR", "EXTREME"}  # Alles stoppen
+
+
+def _manage_bot_type(symbol: str, regime: str, prev_regime: str, dry_run: bool):
+    log = logging.getLogger("supervisor")
+    import requests as _req
+
+    def _api(path, payload):
+        if dry_run:
+            log.info(f"[DRY] {path} {payload}")
+            return True
+        try:
+            r = _req.post(f"{WEB_API}{path}", json=payload, timeout=10)
+            data = r.json()
+            if not data.get("ok"):
+                log.warning(f"{path} fehlgeschlagen: {data.get(chr(39)+chr(101)+chr(114)+chr(114)+chr(111)+chr(114)+chr(39), data)}")
+            return data.get("ok", False)
+        except Exception as e:
+            log.warning(f"Web-API Fehler ({path}): {e}")
+            return False
+
+    new_type  = "grid"  if regime in GRID_REGIMES  else (
+                "trend" if regime in TREND_REGIMES else "none")
+    prev_type = "grid"  if prev_regime in GRID_REGIMES  else (
+                "trend" if prev_regime in TREND_REGIMES else "none")
+
+    if new_type == prev_type:
+        return  # Kein Wechsel noetig
+
+    log.info(f"Bot-Typ-Wechsel {symbol}: {prev_type} -> {new_type} (Regime: {prev_regime} -> {regime})")
+
+    # Alten Bot stoppen
+    if prev_type == "trend":
+        _api("/api/bot/stop", {"symbol": symbol})
+    elif prev_type == "grid":
+        _api("/api/grid/stop", {"symbol": symbol})
+
+    # Neuen Bot starten
+    if new_type == "trend":
+        _api("/api/bot/start", {"symbol": symbol})
+    elif new_type == "grid":
+        _api("/api/grid/start", {"symbol": symbol, "levels": 3, "step": 0.008, "amount": 20})
+
+
 def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, dry_run: bool):
     """Einen Supervisor-Durchlauf über alle Bot-DBs."""
     log = logging.getLogger("supervisor")
     db_paths = sorted(glob(os.path.join(db_dir, "*.db")))
 
     # candles.db + news.db aus der Liste heraushalten
-    db_paths = [p for p in db_paths if os.path.basename(p) not in ("candles.db", "news.db")]
+    _SKIP = {"candles.db", "news.db", "scanner.db", "supervisor.db"}
+    db_paths = [p for p in db_paths if os.path.basename(p) not in _SKIP and not os.path.basename(p).startswith("grid_")]
 
     if not db_paths:
         log.info("Keine Bot-DBs gefunden.")
@@ -644,6 +696,10 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
                 best["val_pnl"] = None
 
             _write(db_path, regime, adx_val, atr_pct, best, dry_run)
+
+            # Bot-Typ je nach Regime umschalten (SIDEWAYS->Grid, BULL->Trend, BEAR->Stopp)
+            if prev and prev != regime and (not GRID_MANAGED_SYMBOLS or symbol in GRID_MANAGED_SYMBOLS):
+                _manage_bot_type(symbol, regime, prev, dry_run)
 
             # Ergebnis für Cross-Bot Learning merken
             results[symbol] = {
