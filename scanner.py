@@ -325,21 +325,31 @@ def write_bot_conf(symbol: str, bot_args: str, conf_dir: str) -> Path:
     return conf_path
 
 
-def start_bot_api(symbol: str, api_url: str, log: logging.Logger) -> bool:
-    """Startet einen Bot via Web API."""
+_GRID_REGIMES = {"SIDEWAYS"}   # Scanner startet Grid-Bot bei diesen Regimes
+
+def start_bot_api(symbol: str, api_url: str, log: logging.Logger,
+                  regime: str = "", grid_step: float = 0.008,
+                  grid_levels: int = 3, grid_amount: float = 20.0) -> bool:
+    """Startet Trend-Bot oder Grid-Bot je nach Regime."""
+    use_grid = regime in _GRID_REGIMES
+    if use_grid:
+        endpoint = "/api/grid/start"
+        payload  = {"symbol": symbol, "step": grid_step,
+                    "levels": grid_levels, "amount": grid_amount}
+        bot_type = "Grid-Bot"
+    else:
+        endpoint = "/api/bot/start"
+        payload  = {"symbol": symbol}
+        bot_type = "Trend-Bot"
     try:
-        resp = requests.post(
-            f"{api_url}/api/bot/start",
-            json={"symbol": symbol},
-            timeout=15,
-        )
+        resp = requests.post(f"{api_url}{endpoint}", json=payload, timeout=15)
         if resp.status_code == 200:
-            log.info(f"Bot gestartet: {symbol}")
+            log.info(f"{bot_type} gestartet: {symbol} (Regime={regime or chr(63)})")
             return True
-        log.warning(f"Bot-Start {symbol}: HTTP {resp.status_code} — {resp.text[:100]}")
+        log.warning(f"{bot_type}-Start {symbol}: HTTP {resp.status_code} — {resp.text[:100]}")
         return False
     except Exception as e:
-        log.error(f"Bot-Start {symbol} fehlgeschlagen: {e}")
+        log.error(f"{bot_type}-Start {symbol} fehlgeschlagen: {e}")
         return False
 
 
@@ -529,8 +539,10 @@ def run_scan_cycle(
         )
 
         if not dry_run:
-            write_bot_conf(ps.symbol, bot_args, conf_dir)
-            if start_bot_api(ps.symbol, api_url, log):
+            # Nur Trend-Bot braucht bot.conf.d — Grid-Bot hat eigene Parameter
+            if ps.regime not in _GRID_REGIMES:
+                write_bot_conf(ps.symbol, bot_args, conf_dir)
+            if start_bot_api(ps.symbol, api_url, log, regime=ps.regime):
                 bots_started.append(ps.symbol)
                 active_symbols.add(ps.symbol)
                 slots -= 1

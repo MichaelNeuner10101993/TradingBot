@@ -532,7 +532,6 @@ def _peer_learning(results: dict, dry_run: bool):
 WEB_API = os.getenv("SUPERVISOR_WEB_API", "http://localhost:5001")
 # Nur diese Coins werden automatisch auf Grid-Bot umgeschaltet
 # Leer lassen = Feature deaktiviert (Scanner-Coins nicht anfassen)
-GRID_MANAGED_SYMBOLS: set[str] = set(os.getenv("SUPERVISOR_GRID_SYMBOLS", "").split(",")) - {""} 
 GRID_REGIMES  = {"SIDEWAYS"}             # Grid-Bot sinnvoll
 TREND_REGIMES = {"BULL", "VOLATILE"}  # SMA-Crossover sinnvoll
 PAUSE_REGIMES = {"BEAR", "EXTREME"}  # Alles stoppen
@@ -698,7 +697,7 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
             _write(db_path, regime, adx_val, atr_pct, best, dry_run)
 
             # Bot-Typ je nach Regime umschalten (SIDEWAYS->Grid, BULL->Trend, BEAR->Stopp)
-            if prev and prev != regime and (not GRID_MANAGED_SYMBOLS or symbol in GRID_MANAGED_SYMBOLS):
+            if prev and prev != regime:  # Supervisor managt alle aktiven Bots automatisch
                 _manage_bot_type(symbol, regime, prev, dry_run)
 
             # Ergebnis für Cross-Bot Learning merken
