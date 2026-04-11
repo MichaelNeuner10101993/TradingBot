@@ -33,7 +33,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from bot.config import ExchangeConfig, OpsConfig
 from bot.data_feed import build_exchange
-from bot.scanner_notify import send_scanner_started, send_scanner_stopped
+from bot.scanner_notify import send_scanner_started, send_scanner_stopped, send_daily_summary
 from bot.persistence import StateDB
 from bot.scanner_score import score_pair, is_eligible_to_start, is_candidate_for_stop, PairScore
 
@@ -305,7 +305,7 @@ def calculate_available_slots(
     min_capital_per_bot: float,
 ) -> int:
     """Wie viele neue Bots können noch gestartet werden?"""
-    running = sum(1 for b in active_bots if b.get("running", False))
+    running = sum(1 for b in active_bots if b.get("process_running", False))
     affordable = int(balance_eur / min_capital_per_bot) if min_capital_per_bot > 0 else 0
     hard_cap = min(max_bots, affordable)
     return max(0, hard_cap - running)
@@ -363,6 +363,28 @@ def stop_bot_api(symbol: str, api_url: str, log: logging.Logger) -> bool:
 
 # ─── Haupt-Scan-Zyklus ────────────────────────────────────────────────────────
 
+def _get_pnl_24h(db_dir: str) -> float:
+    """Summiert realisierten P&L aller Bots aus den letzten 24h."""
+    import glob as _glob
+    cutoff = int(time.time()) - 86400
+    total  = 0.0
+    for db_path in _glob.glob(os.path.join(db_dir, "*.db")):
+        base = os.path.basename(db_path)
+        if base in ("scanner.db", "supervisor.db", "news.db"):
+            continue
+        try:
+            conn = sqlite3.connect(db_path, timeout=3)
+            rows = conn.execute(
+                "SELECT pnl_eur FROM trades WHERE status='closed' AND exit_time > ?",
+                (cutoff,)
+            ).fetchall()
+            conn.close()
+            total += sum(r[0] for r in rows if r[0])
+        except Exception:
+            pass
+    return total
+
+
 def run_scan_cycle(
     cfg: dict,
     exchange: ccxt.Exchange,
@@ -385,7 +407,7 @@ def run_scan_cycle(
         write_scan_report(scanner_db, ts_start, 0, 0, [], [], [], 0.0, 0, "api_unavailable")
         return
 
-    active_symbols = {b["symbol"] for b in active_bots if b.get("running", False)}
+    active_symbols = {b["symbol"] for b in active_bots if b.get("process_running", False)}
     log.info(f"Aktuell laufende Bots: {len(active_symbols)} — {sorted(active_symbols)}")
 
     # ── 2. Balance ─────────────────────────────────────────────────────────────
@@ -434,7 +456,7 @@ def run_scan_cycle(
 
     for bot in active_bots:
         sym = bot.get("symbol", "")
-        if not bot.get("running", False):
+        if not bot.get("process_running", False):
             continue
 
         state = read_bot_state(sym, db_dir)
@@ -474,7 +496,7 @@ def run_scan_cycle(
 
     # Slots nach Stopp neu berechnen
     active_bots_after_stop = [b for b in active_bots
-                               if b.get("running") and b.get("symbol") not in bots_stopped]
+                               if b.get("process_running") and b.get("symbol") not in bots_stopped]
     slots = calculate_available_slots(
         active_bots_after_stop,
         _cfg_int(cfg, "SCAN_MAX_BOTS"),
@@ -543,6 +565,33 @@ def run_scan_cycle(
         f"Gestartet={len(bots_started)} | Gestoppt={len(bots_stopped)} ==="
     )
     log.info(f"Top-5 Coins: {[f'{s.symbol}({s.total}pt,{s.regime})' for s in scores[:5]]}")
+
+    # ── 8. Tägliche Zusammenfassung (08:00 UTC) ──────────────────────────────
+    _now_utc = __import__("datetime").datetime.utcnow()
+    _summary_key = _now_utc.strftime("%Y-%m-%d")
+    _sent_key_file = os.path.join(PROJECT_ROOT, "db", ".summary_sent")
+    _last_key = ""
+    try:
+        if os.path.exists(_sent_key_file):
+            _last_key = open(_sent_key_file).read().strip()
+    except Exception:
+        pass
+    if _now_utc.hour >= 8 and _summary_key != _last_key:
+        try:
+            _active_list = [
+                {"symbol": sym, "regime": score_by_symbol[sym].regime if sym in score_by_symbol else "?"}
+                for sym in sorted(active_symbols)
+            ]
+            _top_list = [
+                {"symbol": s.symbol, "score": s.total, "regime": s.regime}
+                for s in scores[:3]
+            ]
+            _pnl_24h = _get_pnl_24h(db_dir)
+            send_daily_summary(balance_eur, _pnl_24h, _active_list, _top_list)
+            open(_sent_key_file, "w").write(_summary_key)
+            log.info(f"Tägliche Zusammenfassung gesendet (P&L 24h: {_pnl_24h:+.2f}€)")
+        except Exception as _e:
+            log.warning(f"Tägliche Zusammenfassung fehlgeschlagen: {_e}")
 
     write_scan_report(
         scanner_db,

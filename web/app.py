@@ -124,6 +124,15 @@ def _is_running(pid_file: str) -> bool:
         with open(pid_file) as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
+        # PID existiert — prüfen ob es wirklich unser main.py ist (Schutz vor PID-Recycling)
+        try:
+            with open(f"/proc/{pid}/cmdline") as f:
+                cmdline = f.read()
+            if "main.py" not in cmdline:
+                os.remove(pid_file)  # Stale PID-Datei aufräumen
+                return False
+        except Exception:
+            pass  # /proc nicht verfügbar → nur os.kill-Check nutzen
         return True
     except Exception:
         return False
@@ -287,6 +296,17 @@ def _load_bot(db_path: str) -> dict:
         symbol_safe     = symbol.replace("/", "_")
         pid_file        = os.path.join(PID_DIR, f"{symbol_safe}.pid")
         process_running = _is_running(pid_file)
+
+        # Zusatz: systemd-Service prüfen (für systemd-verwaltete Bots ohne PID-Datei)
+        if not process_running:
+            try:
+                import subprocess as _sp
+                _svc = f"tradingbot@{symbol_safe}.service"
+                _r = _sp.run(["systemctl", "is-active", _svc], capture_output=True, text=True)
+                if _r.stdout.strip() == "active":
+                    process_running = True
+            except Exception:
+                pass
 
         # Zusatz: DB-Status "running" nur als running werten wenn last_update < 2 min alt
         if not process_running and state.get("status") == "running":
@@ -499,40 +519,62 @@ def api_start_bot():
 
         symbol_safe = symbol.replace("/", "_")
         pid_file    = os.path.join(PID_DIR, f"{symbol_safe}.pid")
+
+        # Systemd-Bot läuft? Prüfen via systemctl is-active
+        import subprocess as _sub
+        _svc = f"tradingbot@{symbol_safe}.service"
+        _r = _sub.run(["systemctl", "is-active", _svc], capture_output=True, text=True)
+        if _r.stdout.strip() == "active":
+            return jsonify({"ok": False, "error": f"{symbol} läuft bereits (systemd)"}), 400
+
         if _is_running(pid_file):
             return jsonify({"ok": False, "error": f"{symbol} läuft bereits"}), 400
 
         os.makedirs(PID_DIR, exist_ok=True)
         os.makedirs(LOG_DIR, exist_ok=True)
 
-        cmd = [
-            PYTHON, MAIN_PY,
-            "--symbol",        symbol,
-            "--timeframe",     data.get("timeframe", "5m"),
-            "--fast",          str(int(data.get("fast",  9))),
-            "--slow",          str(int(data.get("slow", 21))),
-            "--sl",            str(float(data.get("sl",  0.03))),
-            "--tp",            str(float(data.get("tp",  0.06))),
-            "--safety-buffer", str(float(data.get("safety_buffer", 0.10))),
-        ]
-        if data.get("dry_run"):
-            cmd.append("--dry-run")
-        if data.get("trailing_sl"):
-            cmd += ["--trailing-sl", "--trailing-sl-pct", str(float(data.get("trailing_sl_pct", 0.02)))]
-        sl_cd = data.get("sl_cooldown")
-        if sl_cd is not None:
-            cmd += ["--sl-cooldown", str(int(sl_cd))]
-        if data.get("volume_filter"):
-            cmd += ["--volume-filter", "--volume-factor", str(float(data.get("volume_factor", 1.2)))]
-        if data.get("breakeven"):
-            cmd += ["--breakeven", "--breakeven-pct", str(float(data.get("breakeven_pct", 0.01)))]
-        if data.get("partial_tp"):
-            cmd += ["--partial-tp", "--partial-tp-fraction", str(float(data.get("partial_tp_fraction", 0.5)))]
-        htf_tf = data.get("htf_timeframe", "")
-        if htf_tf:
-            cmd += ["--htf-timeframe", htf_tf,
-                    "--htf-fast", str(int(data.get("htf_fast", 9))),
-                    "--htf-slow", str(int(data.get("htf_slow", 21)))]
+        # Wenn bot.conf.d/<SYMBOL>.conf existiert → Argumente daraus lesen
+        conf_file = os.path.join(PROJECT_ROOT, "bot.conf.d", f"{symbol_safe}.conf")
+        if os.path.exists(conf_file) and not data.get("ignore_conf"):
+            import shlex as _shlex
+            _conf_args = []
+            with open(conf_file) as _cf:
+                for _line in _cf:
+                    _line = _line.strip()
+                    if _line.startswith("BOT_ARGS="):
+                        _args_str = _line[9:].strip().strip('"').strip("'")
+                        _conf_args = _shlex.split(_args_str)
+                        break
+            cmd = [PYTHON, MAIN_PY, "--symbol", symbol] + _conf_args
+        else:
+            cmd = [
+                PYTHON, MAIN_PY,
+                "--symbol",        symbol,
+                "--timeframe",     data.get("timeframe", "5m"),
+                "--fast",          str(int(data.get("fast",  9))),
+                "--slow",          str(int(data.get("slow", 21))),
+                "--sl",            str(float(data.get("sl",  0.03))),
+                "--tp",            str(float(data.get("tp",  0.06))),
+                "--safety-buffer", str(float(data.get("safety_buffer", 0.10))),
+            ]
+            if data.get("dry_run"):
+                cmd.append("--dry-run")
+            if data.get("trailing_sl"):
+                cmd += ["--trailing-sl", "--trailing-sl-pct", str(float(data.get("trailing_sl_pct", 0.02)))]
+            sl_cd = data.get("sl_cooldown")
+            if sl_cd is not None:
+                cmd += ["--sl-cooldown", str(int(sl_cd))]
+            if data.get("volume_filter"):
+                cmd += ["--volume-filter", "--volume-factor", str(float(data.get("volume_factor", 1.2)))]
+            if data.get("breakeven"):
+                cmd += ["--breakeven", "--breakeven-pct", str(float(data.get("breakeven_pct", 0.01)))]
+            if data.get("partial_tp"):
+                cmd += ["--partial-tp", "--partial-tp-fraction", str(float(data.get("partial_tp_fraction", 0.5)))]
+            htf_tf = data.get("htf_timeframe", "")
+            if htf_tf:
+                cmd += ["--htf-timeframe", htf_tf,
+                        "--htf-fast", str(int(data.get("htf_fast", 9))),
+                        "--htf-slow", str(int(data.get("htf_slow", 21)))]
 
         log_path = os.path.join(LOG_DIR, f"{symbol_safe}.log")
         with open(log_path, "a") as logf:

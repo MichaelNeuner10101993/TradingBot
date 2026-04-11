@@ -1,7 +1,7 @@
 """
-Leichtgewichtiger Telegram-Notifier für Trade-Events.
+Leichtgewichtiger Telegram-Notifier fuer Trade-Events.
 
-Sendet synchron via asyncio.run() – blockiert max. 5s.
+Sendet synchron via asyncio.run() - blockiert max. 5s.
 Wirft nie Exceptions (kein Trade-Ausfall durch Telegram-Fehler).
 Liest Credentials aus Umgebungsvariablen (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID).
 """
@@ -29,10 +29,10 @@ def _fmt(price: float) -> str:
 
 
 def _send_sync(text: str, reply_markup=None) -> bool:
-    """Sendet eine Telegram-Nachricht synchron. Gibt True bei Erfolg zurück."""
+    """Sendet eine Telegram-Nachricht synchron. Gibt True bei Erfolg zurueck."""
     token, chat_id = _creds()
     if not token or not chat_id:
-        log.debug("Telegram-Credentials fehlen – Notifier übersprungen")
+        log.debug("Telegram-Credentials fehlen - Notifier uebersprungen")
         return False
     try:
         from telegram import Bot
@@ -126,18 +126,18 @@ def send_pyramid_buy(
 
 
 def send_drawdown_alert(symbol: str, drawdown_pct: float, is_stop: bool):
-    """Drawdown-Warnung (≥10%) oder -Stopp (≥15%) per Telegram."""
+    """Drawdown-Warnung (>=10%) oder -Stopp (>=15%) per Telegram."""
     if is_stop:
         text = (
             f"🚨 <b>DRAWDOWN-STOPP: {symbol}</b>\n"
-            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> ≥ 15%\n"
+            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> >= 15%\n"
             f"Handel automatisch pausiert.\n"
             f"Fortsetzen via Dashboard oder /start_bot {symbol.replace('/', '_')}"
         )
     else:
         text = (
             f"⚠️ <b>DRAWDOWN-WARNUNG: {symbol}</b>\n"
-            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> ≥ 10%\n"
+            f"Portfolio-Drawdown: <b>{drawdown_pct * 100:.1f}%</b> >= 10%\n"
             f"Position-Sizing auf 50% reduziert bis zur Erholung."
         )
     _send_sync(text)
@@ -150,45 +150,31 @@ def send_supervisor_recommendation(
     cur_vol: bool,
 ):
     """Telegram-Empfehlung wenn Supervisor eine bessere Feature-Kombination gefunden hat."""
-    import json
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    trailing_rec = "✅" if best.get("use_trailing_sl") else "❌"
-    vol_rec      = "✅" if best.get("volume_filter")   else "❌"
-    trailing_cur = "✅" if cur_trailing                else "❌"
-    vol_cur      = "✅" if cur_vol                     else "❌"
-
+    trailing_rec = "✅ an" if best.get("use_trailing_sl") else "❌ aus"
+    vol_rec      = "✅ an" if best.get("volume_filter")   else "❌ aus"
+    cur_trail_s  = "an"   if cur_trailing                 else "aus"
+    cur_vol_s    = "an"   if cur_vol                      else "aus"
+    val_str = f"  val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
     text = (
-        f"🔬 <b>Supervisor-Empfehlung: {symbol}</b>\n"
-        f"Strategie: {best['name']} {best['fast']}/{best['slow']}  "
-        f"Sim-P&L: {best['pnl_pct']:+.2f}% ({best['num_trades']} Trades)\n"
-        f"Trailing SL: {trailing_rec} empfohlen  (aktuell: {trailing_cur})\n"
-        f"Volumen-Filter: {vol_rec} empfohlen  (aktuell: {vol_cur})\n"
-        f"→ Tippe <i>übernehmen</i> oder nutze den Button:"
+        f"🤖 <b>Supervisor-Empfehlung: {symbol}</b>\n"
+        f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>\n"
+        f"Trailing-SL: {cur_trail_s} → <b>{trailing_rec}</b>  "
+        f"Volume-Filter: {cur_vol_s} → <b>{vol_rec}</b>\n"
+        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}"
     )
-    markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "✅ Empfehlung übernehmen",
-            callback_data=json.dumps({"action": "apply_supervisor", "symbol": symbol}),
-        )
-    ]])
-    _send_sync(text, reply_markup=markup)
+    _send_sync(text)
 
 
-def send_peer_strategy_adopted(
+def send_peer_strategy(
     symbol: str,
     peer_strat: dict,
     local_pnl: float,
-    peer_host: str,
 ):
-    """Benachrichtigung wenn eine Peer-Strategie auf eigenen Candles besser ist."""
+    """Benachrichtigung wenn Peer-Learning eine bessere Strategie uebernimmt."""
     val_str = f"  val={peer_strat['val_pnl']:+.2f}%" if peer_strat.get("val_pnl") is not None else ""
     text = (
-        f"🌐 <b>Peer-Learning: {symbol}</b>\n"
-        f"Strategie von <code>{peer_host}</code> übernommen:\n"
-        f"<b>{peer_strat['strategy_name']} {peer_strat['fast']}/{peer_strat['slow']}</b>  "
-        f"{'⬆SL ' if peer_strat.get('use_trailing_sl') else ''}"
-        f"{'📊Vol ' if peer_strat.get('volume_filter') else ''}\n"
+        f"🔗 <b>Peer-Strategie uebernommen: {symbol}</b>\n"
+        f"Strategie: <b>{peer_strat['name']} {peer_strat['fast']}/{peer_strat['slow']}</b>\n"
         f"Peer P&L: {peer_strat['sim_pnl']:+.2f}%{val_str}  SQN={peer_strat['sqn']:.2f}\n"
         f"Lokal getestet: <b>{local_pnl:+.2f}%</b>"
     )
@@ -207,13 +193,13 @@ def send_strategy_learned(
     icon      = "🆕" if regime_changed else "📈"
     regime_str = f"{prev_regime} → {regime}" if regime_changed else regime
     val_str    = f"  val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
-    rsi_str    = f"RSI≤{best['rsi_buy_max']:.0f}/{best['rsi_sell_min']:.0f}" if "rsi_buy_max" in best else ""
+    rsi_str    = f"RSI<={best['rsi_buy_max']:.0f}/{best['rsi_sell_min']:.0f}" if "rsi_buy_max" in best else ""
     text = (
         f"{icon} <b>Gelernte Strategie: {symbol}</b>\n"
         f"Regime: {regime_str}\n"
         f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>  "
-        f"{'⬆SL' if best.get('use_trailing_sl') else ''}{'📊Vol' if best.get('volume_filter') else ''}\n"
+        f"{'↑SL ' if best.get('use_trailing_sl') else ''}{'Vol ' if best.get('volume_filter') else ''}\n"
         f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
-        f"Δ SQN: {sqn_delta:+.2f}  {rsi_str}"
+        f"Delta SQN: {sqn_delta:+.2f}  {rsi_str}"
     )
     _send_sync(text)
