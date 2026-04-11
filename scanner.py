@@ -53,6 +53,9 @@ CONF_DEFAULTS: dict[str, str] = {
     "SCAN_DRY_RUN":                "true",
     "SCAN_LOG_LEVEL":              "INFO",
     "SCAN_BOT_ARGS":               "--live --sl 0.015 --tp 0.50 --trailing-sl --trailing-sl-pct 0.03 --sma200-filter --slope-filter --breakeven --breakeven-pct 0.008 --partial-tp --partial-tp-fraction 0.5 --htf-timeframe 1h --htf-fast 21 --htf-slow 55 --startup-delay 60 --volume-factor 1.5",
+    "SCAN_GRID_STEP":              "0.008",
+    "SCAN_GRID_LEVELS":            "3",
+    "SCAN_SAFETY_BUFFER":          "0.10",
 }
 
 
@@ -515,6 +518,12 @@ def run_scan_cycle(
     )
     log.info(f"Verfügbare Slots für neue Bots: {slots}")
 
+    # Grid-Budget-Parameter
+    grid_step   = _cfg_float(cfg, "SCAN_GRID_STEP")
+    grid_levels = _cfg_int(cfg,   "SCAN_GRID_LEVELS")
+    safety_buf  = _cfg_float(cfg, "SCAN_SAFETY_BUFFER")
+    n_running   = len(active_bots_after_stop)  # wird im Loop hochgezählt
+
     if balance_eur < _cfg_float(cfg, "SCAN_MIN_CAPITAL_PER_BOT"):
         log.warning(
             f"Balance {balance_eur:.2f}€ < Min {_cfg_float(cfg, 'SCAN_MIN_CAPITAL_PER_BOT'):.0f}€ "
@@ -542,9 +551,23 @@ def run_scan_cycle(
             # Nur Trend-Bot braucht bot.conf.d — Grid-Bot hat eigene Parameter
             if ps.regime not in _GRID_REGIMES:
                 write_bot_conf(ps.symbol, bot_args, conf_dir)
-            if start_bot_api(ps.symbol, api_url, log, regime=ps.regime):
+            # Dynamisches Grid-Budget: usable / laufende Bots / Levels
+            total_bots  = max(n_running + 1, 1)  # +1 = dieser Bot
+            per_bot_eur = balance_eur * (1 - safety_buf) / total_bots
+            grid_amount = max(
+                per_bot_eur / grid_levels,
+                _cfg_float(cfg, "SCAN_MIN_CAPITAL_PER_BOT") / grid_levels,
+            )
+            log.info(
+                f"Grid-Budget: Balance={balance_eur:.2f}€ | Bots={total_bots} | "
+                f"pro Bot={per_bot_eur:.2f}€ | amount/Level={grid_amount:.2f}€"
+            )
+            if start_bot_api(ps.symbol, api_url, log, regime=ps.regime,
+                             grid_step=grid_step, grid_levels=grid_levels,
+                             grid_amount=round(grid_amount, 2)):
                 bots_started.append(ps.symbol)
                 active_symbols.add(ps.symbol)
+                n_running += 1
                 slots -= 1
                 send_scanner_started(
                     ps.symbol, ps.total, ps.regime, ps.adx, ps.rsi_val,
