@@ -392,10 +392,14 @@ def load_all_bots() -> list[dict]:
     )
     return [_load_bot(p) for p in paths]
 
+def _is_active_bot(b: dict) -> bool:
+    """Aktiv = Prozess läuft ODER Bot ist paused (bewusst pausiert, nicht gestoppt)."""
+    return b.get("process_running", False) or b.get("status") == "paused"
+
 
 @app.route("/")
 def index():
-    bots = load_all_bots()
+    bots = [b for b in load_all_bots() if _is_active_bot(b)]
     # Cache nutzen wenn vorhanden (kein blockierender API-Call beim Seitenaufbau)
     # JS aktualisiert die Werte via /api/balance im Hintergrund
     bal = _balance_cache["data"]
@@ -423,9 +427,12 @@ def index():
 
 @app.route("/api/bots")
 def api_bots():
-    bots = load_all_bots()
+    all_bots = load_all_bots()
+    # active_only=false gibt alle zurück (für interne Nutzung)
+    if request.args.get("active_only", "true").lower() != "false":
+        all_bots = [b for b in all_bots if _is_active_bot(b)]
     # Nur state-Daten, keine DB-Objekte
-    return jsonify([{k: v for k, v in b.items() if k not in ("db_path",)} for b in bots])
+    return jsonify([{k: v for k, v in b.items() if k not in ("db_path",)} for b in all_bots])
 
 
 @app.route("/api/trade/<path:symbol>/<client_id>/sltp", methods=["POST"])

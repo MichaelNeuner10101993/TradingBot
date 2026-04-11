@@ -1882,6 +1882,15 @@
           sentiment_stop_threshold: parseFloat(st.sentiment_stop_threshold || '-0.5'),
         }));
       }
+
+    // Karten und Sektionen gestoppter Bots ausblenden
+    const activeSym = new Set(bots.map(b => b.symbol));
+    document.querySelectorAll('.bot-card[data-symbol]').forEach(card => {
+      card.style.display = activeSym.has(card.dataset.symbol) ? '' : 'none';
+    });
+    document.querySelectorAll('.bot-section[data-symbol]').forEach(sec => {
+      sec.style.display = activeSym.has(sec.dataset.symbol) ? '' : 'none';
+    });
     });
   }
 
