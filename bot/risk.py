@@ -2,52 +2,85 @@
 Risk & Position Sizing.
 Berechnet Ordergrößen dynamisch basierend auf:
   - Aktuelle Gesamtbalance
-  - Anzahl aktiver Bot-Instanzen mit gleicher Quote-Currency (Pool)
+  - Anzahl wirklich laufender Bot-Instanzen mit gleicher Quote-Currency (Pool)
   - Sicherheitspuffer (safety_buffer_pct)
 
 Kapital-Pools: EUR-Bots und USDT-Bots konkurrieren NICHT um dasselbe Kapital.
-_count_active_bots() zählt nur Bots im gleichen Quote-Pool (erkannt via DB-Dateiname).
+_count_active_bots() zählt nur tatsächlich laufende Prozesse:
+  1. PID-Dateien in run/*.pid (web-API-gestartete Bots)
+  2. Aktive systemd tradingbot@*.service Units
+  Grid-Bots (grid_*.pid) werden nicht gezählt (eigenes Budget via --amount).
 """
 import logging
 import os
+import subprocess
 from glob import glob
 from bot.config import RiskConfig
 
 log = logging.getLogger("tradingbot.risk")
 
-# DBs die keine Bot-Instanzen sind
-_SKIP_DBS = {"candles.db", "news.db"}
 
-
-def _quote_from_filename(filename: str) -> str:
-    """
-    Extrahiert Quote-Currency aus DB-Dateiname.
-    BTC_EUR.db → EUR  |  BTC_USDT.db → USDT  |  TRUMP_EUR.db → EUR
-    """
-    name = os.path.basename(filename).replace(".db", "")
+def _quote_from_name(name: str) -> str:
+    """BTC_EUR → EUR | BTC_USDT → USDT"""
     parts = name.split("_")
     return parts[-1].upper() if len(parts) >= 2 else "EUR"
 
 
+def _pid_is_alive(pid_file: str) -> bool:
+    """Prüft ob PID-Datei existiert und der Prozess noch läuft."""
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
 def _count_active_bots(db_dir: str, quote_currency: str = "") -> int:
     """
-    Zählt Bot-Instanzen im gleichen Quote-Currency-Pool.
-    Wenn quote_currency angegeben: nur Bots mit gleicher Quote (z.B. nur EUR-Bots).
-    Sonst: alle Bot-DBs.
+    Zählt tatsächlich laufende Trend-Bot-Instanzen im gleichen Quote-Currency-Pool.
+
+    Quellen (vereinigt, keine Doppelzählung):
+      1. run/*.pid  — web-API-gestartete Bots mit lebendem Prozess
+      2. systemd tradingbot@*.service — systemd-verwaltete Bots (active)
+
+    Grid-Bots (grid_*) werden ausgeschlossen — die verwalten ihr Budget selbst.
     """
-    dbs = [
-        p for p in glob(f"{db_dir}/*.db")
-        if os.path.basename(p) not in _SKIP_DBS
-    ]
+    run_dir = os.path.join(os.path.dirname(db_dir), "run")
+    running: set[str] = set()
 
-    if not quote_currency:
-        count = max(len(dbs), 1)
-        log.debug(f"Aktive Bot-Instanzen gesamt: {count}")
-        return count
+    # 1. PID-Dateien
+    for pid_file in glob(os.path.join(run_dir, "*.pid")):
+        name = os.path.basename(pid_file)[:-4]          # z.B. BTC_EUR
+        if name.startswith("grid_"):
+            continue
+        if _pid_is_alive(pid_file):
+            running.add(name)
 
-    count = sum(1 for p in dbs if _quote_from_filename(p) == quote_currency.upper())
-    count = max(count, 1)
-    log.debug(f"Aktive Bot-Instanzen im {quote_currency}-Pool: {count}")
+    # 2. Systemd-Units
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "list-units", "tradingbot@*.service",
+             "--state=active", "--no-legend", "--plain"],
+            text=True, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        for line in out.splitlines():
+            # "tradingbot@BTC_EUR.service  loaded active running ..."
+            if "tradingbot@" not in line:
+                continue
+            name = line.split("tradingbot@")[1].split(".service")[0]
+            running.add(name)
+    except Exception:
+        pass
+
+    # Nach Quote-Currency filtern
+    if quote_currency:
+        q = quote_currency.upper()
+        running = {n for n in running if _quote_from_name(n) == q}
+
+    count = max(len(running), 1)
+    log.debug(f"Laufende Bots im {quote_currency or 'gesamt'}-Pool: {count} {sorted(running)}")
     return count
 
 
