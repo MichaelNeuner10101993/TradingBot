@@ -444,7 +444,7 @@ def run_scan_cycle(
         if not ps.disqualified:
             scores.append(ps)
 
-    scores.sort(key=lambda s: s.total, reverse=True)
+    scores.sort(key=lambda s: (s.total, s.atr_pct), reverse=True)
     log.info(f"Gescored: {len(scores)} Paare")
 
     # Scores-Dict für schnellen Lookup
@@ -587,7 +587,14 @@ def run_scan_cycle(
                 for s in scores[:3]
             ]
             _pnl_24h = _get_pnl_24h(db_dir)
-            send_daily_summary(balance_eur, _pnl_24h, _active_list, _top_list)
+            _staking_eur = 0.0
+            try:
+                import requests as _req
+                _sr = _req.get("http://localhost:5001/api/staking", timeout=5).json()
+                _staking_eur = float(_sr.get("total_eur", 0) or 0)
+            except Exception:
+                pass
+            send_daily_summary(balance_eur, _pnl_24h, _active_list, _top_list, staking_eur=_staking_eur)
             open(_sent_key_file, "w").write(_summary_key)
             log.info(f"Tägliche Zusammenfassung gesendet (P&L 24h: {_pnl_24h:+.2f}€)")
         except Exception as _e:

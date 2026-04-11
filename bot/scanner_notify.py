@@ -64,6 +64,7 @@ def send_daily_summary(
     pnl_24h_eur: float,
     active_bots: list,
     top_candidates: list,
+    staking_eur: float = 0.0,
 ) -> None:
     """Taegliche Zusammenfassung um 08:00 UTC."""
     nl        = chr(10)
@@ -78,9 +79,11 @@ def send_daily_summary(
     ]
     top_str   = nl.join(top_lines) or "  – keine Kandidaten –"
     pnl_str   = f"{pnl_sign}{pnl_24h_eur:.2f}€"
+    staking_str = f"  🏦 Gestakt: <b>{staking_eur:.2f}€</b>" + nl if staking_eur > 0 else ""
     msg = (
         f"📊 <b>Tägliche Scanner-Zusammenfassung</b>" + nl
         + f"Balance: <b>{balance_eur:.2f}€</b> | P&amp;L 24h: <b>{pnl_str}</b>" + nl
+        + staking_str
         + nl + f"<b>Aktive Bots ({len(active_bots)}):</b>" + nl + bots_str + nl
         + nl + f"<b>Top-3 Kandidaten:</b>" + nl + top_str
     )

@@ -61,6 +61,7 @@ class PairScore:
     rsi_pts: int
     trend_pts: int
     volume_pts: int
+    atr_pts: int = 0
     # Disqualifikation
     disqualified: bool = False
     disqualify_reason: Optional[str] = None
@@ -122,7 +123,17 @@ def score_pair(symbol: str, candles_1h: list) -> PairScore:
     trend_pts = 1 if sma50_above else 0
     vol_pts   = 1 if vol_surge else 0
 
-    total = regime_pts + adx_pts + rsi_pts + trend_pts + vol_pts
+    # ATR%-Punkte: zu ruhige Märkte sind ungeeignet (TP nicht erreichbar)
+    if atr_pct >= 1.5:
+        atr_pts = 2   # sehr aktiv → TP gut erreichbar
+    elif atr_pct >= 0.7:
+        atr_pts = 1   # aktiv → gut
+    elif atr_pct < 0.3:
+        atr_pts = -2  # zu ruhig → SL sicher, TP nie
+    else:
+        atr_pts = 0
+
+    total = regime_pts + adx_pts + rsi_pts + trend_pts + vol_pts + atr_pts
 
     return PairScore(
         symbol              = symbol,
@@ -140,6 +151,7 @@ def score_pair(symbol: str, candles_1h: list) -> PairScore:
         rsi_pts             = rsi_pts,
         trend_pts           = trend_pts,
         volume_pts          = vol_pts,
+        atr_pts             = atr_pts,
     )
 
 

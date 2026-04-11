@@ -743,6 +743,31 @@
   </div>
 </div>
 
+<!-- ── Staking ──────────────────────────────────────────── -->
+<div class="bot-section" id="staking-section">
+  <div class="bot-section-header" onclick="toggle(this)">
+    <span class="chevron">▼</span>
+    <span>🏦 Staking / Earn</span>
+    <span id="staking-total-badge" style="margin-left:auto;font-size:0.8rem;color:#8b949e"></span>
+  </div>
+  <div class="bot-section-body" style="overflow-x:auto">
+    <div id="staking-loading" style="color:#8b949e;padding:1rem 0">Lade…</div>
+    <table id="staking-table" class="trade-table" style="display:none;width:100%">
+      <thead>
+        <tr>
+          <th>Asset</th>
+          <th>Gestakt</th>
+          <th>EUR-Wert</th>
+          <th>Gesamt-Rewards</th>
+          <th>Gesch. Wochenreward</th>
+        </tr>
+      </thead>
+      <tbody id="staking-tbody"></tbody>
+    </table>
+    <div id="staking-empty" style="display:none;color:#8b949e;padding:0.5rem 0">Keine aktiven Staking-Positionen.</div>
+  </div>
+</div>
+
 <!-- ── Per-Bot Detail Sections ──────────────────────────── -->
 {% if bots %}<div class="section-title" style="margin-top:8px">🤖 Bot-Details</div>{% endif %}
 <div id="bot-details">
@@ -2011,27 +2036,16 @@
   }
 
   async function holdingSell(symbol, btn, botRunning) {
-    const msg = botRunning
-      ? `Force-SELL für ${symbol} senden? Der Bot verkauft beim nächsten Loop (~60s).`
-      : `${symbol} SOFORT verkaufen? Diese Order geht direkt an Kraken (kein Bot nötig).`;
-    if (!confirm(msg)) return;
+    if (!confirm(`${symbol} SOFORT verkaufen? Verkauft alles auf Kraken direkt.`)) return;
     btn.disabled = true;
     btn.textContent = '…';
     try {
-      let r;
-      if (botRunning) {
-        r = await fetch('/api/bot/force_signal', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({symbol, signal: 'SELL'})
-        }).then(res => res.json());
-      } else {
-        r = await fetch('/api/direct_sell', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({symbol})
-        }).then(res => res.json());
-      }
+      // Immer direct_sell: verkauft sofort auf Kraken + schließt DB-Trade
+      const r = await fetch('/api/direct_sell', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({symbol})
+      }).then(res => res.json());
       btn.textContent = r.ok ? '✓ verkauft' : '❌ ' + (r.error || 'Fehler');
     } catch(e) {
       btn.textContent = '❌ Fehler';
@@ -2039,8 +2053,39 @@
     setTimeout(() => { btn.textContent = 'Verkaufen'; btn.disabled = false; }, 4000);
   }
 
+  // ── Staking ──────────────────────────────────────────────────────────
+  async function updateStaking() {
+    try {
+      const res = await fetch("/api/staking");
+      const data = await res.json();
+      document.getElementById("staking-loading").style.display = "none";
+      const staked = data.staked || [];
+      const total  = data.total_eur || 0;
+      const badge  = document.getElementById("staking-total-badge");
+      if (badge) badge.textContent = total > 0 ? "≈ " + total.toFixed(2) + " €" : "";
+      const tbody = document.getElementById("staking-tbody");
+      tbody.innerHTML = "";
+      if (!staked.length) {
+        document.getElementById("staking-empty").style.display = "";
+        return;
+      }
+      document.getElementById("staking-table").style.display = "";
+      staked.forEach(s => {
+        const est = s.est_weekly_native > 0 ? s.est_weekly_native.toFixed(8) + " " + s.asset : "–";
+        const rew = s.rewarded_eur > 0 ? s.rewarded_eur.toFixed(4) + " €" : (s.rewarded_native > 0 ? s.rewarded_native.toFixed(8) + " " + s.asset : "–");
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td>" + s.asset + "</td><td>" + (s.amount_native > 0 ? s.amount_native.toFixed(6) : "–") + "</td><td>" + (s.amount_eur > 0 ? s.amount_eur.toFixed(2) + " €" : "–") + "</td><td>" + rew + "</td><td>" + est + "</td>";
+        tbody.appendChild(tr);
+      });
+    } catch(e) {
+      document.getElementById("staking-loading").textContent = "Fehler: " + e;
+    }
+  }
+
   updateHoldings();
   setInterval(updateHoldings, 60000);   // jede Minute Kurse aktualisieren
+  updateStaking();
+  setInterval(updateStaking, 300000);    // alle 5 Minuten Staking-Daten
 
   // ── Balance im Hintergrund alle 5 Minuten aktualisieren ─────────────
   async function updateBalance() {

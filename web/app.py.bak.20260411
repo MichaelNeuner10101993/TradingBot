@@ -297,17 +297,6 @@ def _load_bot(db_path: str) -> dict:
         pid_file        = os.path.join(PID_DIR, f"{symbol_safe}.pid")
         process_running = _is_running(pid_file)
 
-        # Zusatz: systemd-Service prüfen (für systemd-verwaltete Bots ohne PID-Datei)
-        if not process_running:
-            try:
-                import subprocess as _sp
-                _svc = f"tradingbot@{symbol_safe}.service"
-                _r = _sp.run(["systemctl", "is-active", _svc], capture_output=True, text=True)
-                if _r.stdout.strip() == "active":
-                    process_running = True
-            except Exception:
-                pass
-
         # Zusatz: DB-Status "running" nur als running werten wenn last_update < 2 min alt
         if not process_running and state.get("status") == "running":
             try:
@@ -383,12 +372,12 @@ def _load_bot(db_path: str) -> dict:
         }
 
 
-_SKIP_DBS = {"candles.db", "news.db", "scanner.db", "supervisor.db"}
+_SKIP_DBS = {"candles.db", "news.db"}
 
 def load_all_bots() -> list[dict]:
     paths = sorted(
         p for p in glob(os.path.join(DB_DIR, "*.db"))
-        if os.path.basename(p) not in _SKIP_DBS and "_EUR" in os.path.basename(p) and not os.path.basename(p).startswith("_")
+        if os.path.basename(p) not in _SKIP_DBS
     )
     return [_load_bot(p) for p in paths]
 
@@ -487,49 +476,6 @@ def api_balance():
     return jsonify(data)
 
 
-_staking_cache: dict = {"data": None, "ts": 0.0}
-
-@app.route("/api/staking")
-def api_staking():
-    import time as _t
-    now = _t.time()
-    if _staking_cache["data"] is not None and now - _staking_cache["ts"] < 300:
-        return jsonify(_staking_cache["data"])
-    try:
-        from bot.config import ExchangeConfig
-        from bot.data_feed import build_exchange
-        ex = build_exchange(ExchangeConfig())
-        raw = ex.private_post_earn_allocations({})
-        items = raw.get("result", {}).get("items", [])
-        staked = []
-        total_eur = 0.0
-        for it in items:
-            amount_native = float((it.get("amount_allocated") or {}).get("total", {}).get("native", 0) or 0)
-            amount_usd    = float((it.get("amount_allocated") or {}).get("total", {}).get("converted", 0) or 0)
-            rew_native = float((it.get("total_rewarded") or {}).get("native", 0) or 0)
-            rew_usd    = float((it.get("total_rewarded") or {}).get("converted", 0) or 0)
-            if amount_native <= 0 and rew_native <= 0:
-                continue
-            asset = it.get("native_asset", "?")
-            try:
-                rate = _eur_rate("USD")  # USD -> EUR conversion
-            except Exception:
-                rate = 1.0 / 1.1
-            amount_eur = amount_usd * rate
-            rew_eur    = rew_usd * rate
-            total_eur += amount_eur
-            payout = it.get("payout") or {}
-            est_rew = float((payout.get("estimated_reward") or {}).get("native", 0) or 0)
-            staked.append({"asset": asset, "amount_native": amount_native, "amount_eur": round(amount_eur, 4), "rewarded_native": rew_native, "rewarded_eur": round(rew_eur, 4), "est_weekly_native": est_rew})
-        staked.sort(key=lambda x: -x["amount_eur"])
-        result = {"staked": staked, "total_eur": round(total_eur, 4)}
-        _staking_cache["data"] = result
-        _staking_cache["ts"]   = now
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e), "staked": [], "total_eur": 0.0})
-
-
 @app.route("/api/holdings")
 def api_holdings():
     """Alle gehaltenen Coins mit Menge, Kurs, EUR-Wert und Bot-Status."""
@@ -562,62 +508,40 @@ def api_start_bot():
 
         symbol_safe = symbol.replace("/", "_")
         pid_file    = os.path.join(PID_DIR, f"{symbol_safe}.pid")
-
-        # Systemd-Bot läuft? Prüfen via systemctl is-active
-        import subprocess as _sub
-        _svc = f"tradingbot@{symbol_safe}.service"
-        _r = _sub.run(["systemctl", "is-active", _svc], capture_output=True, text=True)
-        if _r.stdout.strip() == "active":
-            return jsonify({"ok": False, "error": f"{symbol} läuft bereits (systemd)"}), 400
-
         if _is_running(pid_file):
             return jsonify({"ok": False, "error": f"{symbol} läuft bereits"}), 400
 
         os.makedirs(PID_DIR, exist_ok=True)
         os.makedirs(LOG_DIR, exist_ok=True)
 
-        # Wenn bot.conf.d/<SYMBOL>.conf existiert → Argumente daraus lesen
-        conf_file = os.path.join(PROJECT_ROOT, "bot.conf.d", f"{symbol_safe}.conf")
-        if os.path.exists(conf_file) and not data.get("ignore_conf"):
-            import shlex as _shlex
-            _conf_args = []
-            with open(conf_file) as _cf:
-                for _line in _cf:
-                    _line = _line.strip()
-                    if _line.startswith("BOT_ARGS="):
-                        _args_str = _line[9:].strip().strip('"').strip("'")
-                        _conf_args = _shlex.split(_args_str)
-                        break
-            cmd = [PYTHON, MAIN_PY, "--symbol", symbol] + _conf_args
-        else:
-            cmd = [
-                PYTHON, MAIN_PY,
-                "--symbol",        symbol,
-                "--timeframe",     data.get("timeframe", "5m"),
-                "--fast",          str(int(data.get("fast",  9))),
-                "--slow",          str(int(data.get("slow", 21))),
-                "--sl",            str(float(data.get("sl",  0.03))),
-                "--tp",            str(float(data.get("tp",  0.06))),
-                "--safety-buffer", str(float(data.get("safety_buffer", 0.10))),
-            ]
-            if data.get("dry_run"):
-                cmd.append("--dry-run")
-            if data.get("trailing_sl"):
-                cmd += ["--trailing-sl", "--trailing-sl-pct", str(float(data.get("trailing_sl_pct", 0.02)))]
-            sl_cd = data.get("sl_cooldown")
-            if sl_cd is not None:
-                cmd += ["--sl-cooldown", str(int(sl_cd))]
-            if data.get("volume_filter"):
-                cmd += ["--volume-filter", "--volume-factor", str(float(data.get("volume_factor", 1.2)))]
-            if data.get("breakeven"):
-                cmd += ["--breakeven", "--breakeven-pct", str(float(data.get("breakeven_pct", 0.01)))]
-            if data.get("partial_tp"):
-                cmd += ["--partial-tp", "--partial-tp-fraction", str(float(data.get("partial_tp_fraction", 0.5)))]
-            htf_tf = data.get("htf_timeframe", "")
-            if htf_tf:
-                cmd += ["--htf-timeframe", htf_tf,
-                        "--htf-fast", str(int(data.get("htf_fast", 9))),
-                        "--htf-slow", str(int(data.get("htf_slow", 21)))]
+        cmd = [
+            PYTHON, MAIN_PY,
+            "--symbol",        symbol,
+            "--timeframe",     data.get("timeframe", "5m"),
+            "--fast",          str(int(data.get("fast",  9))),
+            "--slow",          str(int(data.get("slow", 21))),
+            "--sl",            str(float(data.get("sl",  0.03))),
+            "--tp",            str(float(data.get("tp",  0.06))),
+            "--safety-buffer", str(float(data.get("safety_buffer", 0.10))),
+        ]
+        if data.get("dry_run"):
+            cmd.append("--dry-run")
+        if data.get("trailing_sl"):
+            cmd += ["--trailing-sl", "--trailing-sl-pct", str(float(data.get("trailing_sl_pct", 0.02)))]
+        sl_cd = data.get("sl_cooldown")
+        if sl_cd is not None:
+            cmd += ["--sl-cooldown", str(int(sl_cd))]
+        if data.get("volume_filter"):
+            cmd += ["--volume-filter", "--volume-factor", str(float(data.get("volume_factor", 1.2)))]
+        if data.get("breakeven"):
+            cmd += ["--breakeven", "--breakeven-pct", str(float(data.get("breakeven_pct", 0.01)))]
+        if data.get("partial_tp"):
+            cmd += ["--partial-tp", "--partial-tp-fraction", str(float(data.get("partial_tp_fraction", 0.5)))]
+        htf_tf = data.get("htf_timeframe", "")
+        if htf_tf:
+            cmd += ["--htf-timeframe", htf_tf,
+                    "--htf-fast", str(int(data.get("htf_fast", 9))),
+                    "--htf-slow", str(int(data.get("htf_slow", 21)))]
 
         log_path = os.path.join(LOG_DIR, f"{symbol_safe}.log")
         with open(log_path, "a") as logf:
