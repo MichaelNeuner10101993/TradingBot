@@ -1175,6 +1175,18 @@
         const TRADE_SL = {{ _ot.sl_price | float if _ot and _ot.sl_price else 'null' }};
         const TRADE_TP = {{ _ot.tp_price | float if _ot and _ot.tp_price else 'null' }};
         const TRADE_EN = {{ _ot.entry_price | float if _ot and _ot.entry_price else 'null' }};
+        const FAST_PERIOD = {{ (bot.state.get('effective_fast') or bot.state.get('fast_period') or '9') | int }};
+        const SLOW_PERIOD = {{ (bot.state.get('effective_slow') or bot.state.get('slow_period') or '21') | int }};
+
+        function calcSMA(closes, period) {
+          const result = new Array(closes.length).fill(null);
+          for (let i = period - 1; i < closes.length; i++) {
+            let sum = 0;
+            for (let j = i - period + 1; j <= i; j++) sum += closes[j];
+            result[i] = sum / period;
+          }
+          return result;
+        }
 
         function drawChart(data, markers) { markers = markers || [];
           ohlcv = data;
@@ -1201,12 +1213,19 @@
           const ch = H - PAD_T - PAD_B;
           const n  = data.length;
 
+          /* SMA berechnen */
+          const closes  = data.map(d => d.c);
+          const smaFast = calcSMA(closes, FAST_PERIOD);
+          const smaSlow = calcSMA(closes, SLOW_PERIOD);
+
           /* Preis-Range inkl. SL/TP */
           let hi = Math.max(...data.map(d => d.h));
           let lo = Math.min(...data.map(d => d.l));
           if (TRADE_SL) { hi = Math.max(hi, TRADE_SL); lo = Math.min(lo, TRADE_SL); }
           if (TRADE_TP) { hi = Math.max(hi, TRADE_TP); lo = Math.min(lo, TRADE_TP); }
           if (TRADE_EN) { hi = Math.max(hi, TRADE_EN); lo = Math.min(lo, TRADE_EN); }
+          smaFast.forEach(v => { if (v !== null) { hi = Math.max(hi, v); lo = Math.min(lo, v); } });
+          smaSlow.forEach(v => { if (v !== null) { hi = Math.max(hi, v); lo = Math.min(lo, v); } });
           const margin = (hi - lo) * 0.05 || hi * 0.001;
           hi += margin; lo -= margin;
           const range = hi - lo || 1;
@@ -1286,6 +1305,33 @@
             const bh   = Math.max(1, yBot - yTop);
             ctx.fillRect(x - cWidth / 2, yTop, cWidth, bh);
           }
+
+          /* SMA-Linien */
+          (function() {
+            function drawSMA(arr, color, label) {
+              ctx.strokeStyle = color;
+              ctx.lineWidth   = 1.2;
+              ctx.setLineDash([]);
+              ctx.beginPath();
+              let started = false;
+              for (let i = 0; i < arr.length; i++) {
+                if (arr[i] === null) { started = false; continue; }
+                const x = xOf(i), y = yOf(arr[i]);
+                if (!started) { ctx.moveTo(x, y); started = true; }
+                else            ctx.lineTo(x, y);
+              }
+              ctx.stroke();
+              const last = arr[arr.length - 1];
+              if (last !== null) {
+                ctx.fillStyle = color;
+                ctx.font      = 'bold 9px monospace';
+                ctx.textAlign = 'left';
+                ctx.fillText(label, W - PAD_R + 3, yOf(last) + 3);
+              }
+            }
+            drawSMA(smaFast, '#f0883e', 'F' + FAST_PERIOD);
+            drawSMA(smaSlow, '#d2a8ff', 'S' + SLOW_PERIOD);
+          })();
 
           /* SL / TP / Entry Linien */
           function hLine(price, color, label) {
@@ -1370,13 +1416,16 @@
           const ts  = dt.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
           const chg = ((d.c - d.o) / d.o * 100).toFixed(2);
           const col = d.c >= d.o ? '#3fb950' : '#f85149';
+          const fStr = smaFast[idx] !== null ? ` • F:<b style="color:#f0883e">${smaFast[idx].toPrecision(5)}</b>` : '';
+          const sStr = smaSlow[idx] !== null ? ` • S:<b style="color:#d2a8ff">${smaSlow[idx].toPrecision(5)}</b>` : '';
           infoEl.innerHTML =
             `<span style="color:#8b949e">${ts}</span>  ` +
             `O:<b>${d.o.toPrecision(5)}</b>  ` +
             `H:<b>${d.h.toPrecision(5)}</b>  ` +
             `L:<b>${d.l.toPrecision(5)}</b>  ` +
             `C:<b>${d.c.toPrecision(5)}</b>  ` +
-            `<span style="color:${col}">${chg >= 0 ? '+' : ''}${chg}%</span>`;
+            `<span style="color:${col}">${chg >= 0 ? '+' : ''}${chg}%</span>` +
+            fStr + sStr;
         });
         canvas.addEventListener('mouseleave', () => {
           infoEl.textContent = '';
