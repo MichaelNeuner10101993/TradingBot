@@ -1,6 +1,6 @@
 # TradingBot
 
-Automatisierter Krypto-Trading-Bot für Kraken auf dem Raspberry Pi.
+Automatisierter Krypto-Trading-Bot für Kraken auf CAT-TRADING (LXC CT 101, 192.168.2.101).
 Mehrere Bot-Instanzen laufen parallel – je eine pro Coin, je eine SQLite-DB.
 Ein Supervisor erkennt das Marktregime und passt die Strategie dynamisch an.
 Ein News-Agent überwacht Krypto-News und sendet Telegram-Alerts mit Bot-Steuerung.
@@ -47,6 +47,8 @@ bot/
 │   ├── pyramid.py           # Pyramid-Nachkauf-Logik (News + Profit-Check)
 │   ├── notify.py            # Telegram-Benachrichtigungen (Kauf/Verkauf/Pyramid)
 │   ├── persistence.py       # SQLite (orders, trades, errors, bot_state, supervisor_log)
+│   ├── scanner_score.py     # Scoring-Modul für Trend-Scanner (PairScore, ATR-Tiebreaker)
+│   ├── scanner_notify.py    # Tägliche Telegram-Zusammenfassung (Scanner)
 │   └── ops.py               # Logging, Retry/Backoff, Circuit Breaker
 │
 ├── news/
@@ -60,11 +62,24 @@ bot/
 │   ├── app.py               # Flask Dashboard (Port 5001)
 │   └── templates/index.html # Dark-Theme UI, Logo, Hover-Tooltips, Live-Refresh
 │
+├── scanner_score.py → bot/scanner_score.py  # Scoring-Modul für Scanner
+├── scanner_notify.py → bot/scanner_notify.py # Tägliche Telegram-Zusammenfassung
+│
 ├── db/                      # SQLite-DBs (eine pro Bot + news.db)
 ├── db/archive/              # Archivierte DBs gelöschter Bots
 ├── logs/                    # Log-Dateien pro Bot + Supervisor + News
 ├── bot.conf.d/              # Konfiguration pro Bot-Instanz (systemd)
 ├── systemd/                 # Service-Dateien + install.sh
+│   ├── tradingbot-scanner.service   # Trend-Scanner Systemd-Service
+│   └── tradingbot-grid@.service     # Grid-Bot Template (@ETH_EUR etc.)
+│   ├── tradingbot-scanner.service   # Trend-Scanner (alle 30 Min)
+│   └── tradingbot-grid@.service     # Grid-Bot Template (@ETH_EUR etc.)
+├── scanner.py               # Entry Point Trend-Scanner (alle 30 Min)
+├── grid_bot.py              # Entry Point Grid-Bot (Limit-Raster-Strategie)
+├── scanner.conf             # Konfiguration Scanner (Volume, Score, Bots, Intervall)
+├── scanner.py               # Entry Point Trend-Scanner (alle 30 Min)
+├── grid_bot.py              # Grid-Bot (Limit-Raster für SIDEWAYS-Märkte)
+├── scanner.conf             # Konfiguration Trend-Scanner
 ├── .env                     # API-Keys (nicht committen!)
 ├── .env.example             # Vorlage
 └── requirements.txt
@@ -527,6 +542,20 @@ Strategie: Agile 7/18  Sim-P&L: +3.2% (5 Trades)
 Trailing SL: ✅ empfohlen  (aktuell: ❌)
 ```
 
+### Bot-Typ-Management
+
+Bei einem Regime-Wechsel schaltet der Supervisor automatisch den Bot-Typ um:
+
+| Regime | Bot-Typ | Web-API |
+|--------|---------|----------|
+| **BULL / VOLATILE** | Trend-Bot (`main.py`) | `POST /api/bot/start` |
+| **SIDEWAYS** | Grid-Bot (`grid_bot.py`) | `POST /api/grid/start` |
+| **BEAR / EXTREME** | keiner | beide stoppen |
+
+Der Scanner wählt den Bot-Typ beim ersten Start anhand des erkannten Regimes.
+Ändert sich das Regime (z.B. BULL → SIDEWAYS), übernimmt der Supervisor die Umschaltung
+automatisch — ohne `.env`-Änderung.
+
 ### Regime-Persistenz / Warmstart
 
 Nach jedem Supervisor-Durchlauf speichert der Bot die tatsächlich verwendeten Parameter
@@ -587,6 +616,69 @@ journalctl -u tradingbot-supervisor -f
 | `--dry-run` | – | Nur loggen, nicht in DB schreiben |
 
 ---
+
+
+---
+
+## Trend Scanner (`scanner.py`)
+
+Autonomer Daemon der alle 30 Minuten alle Kraken EUR-Paare scannt und automatisch Bots
+für top-scorende Coins startet bzw. verlustbringende Coins stoppt.
+
+### Scoring (`bot/scanner_score.py`)
+
+| Kriterium | Punkte |
+|-----------|--------|
+| Regime BULL | +3 |
+| Regime VOLATILE | +1 |
+| Regime SIDEWAYS | −1 |
+| Regime EXTREME | −2 |
+| Regime BEAR | −3 |
+| ADX > 30 | +2 |
+| ADX > 25 | +1 |
+| RSI 35–60 | +1 |
+| SMA50 > SMA200 | +1 |
+| Volume-Surge | +1 |
+| ATR% ≥ 1.5% | +2 |
+| ATR% ≥ 0.7% | +1 |
+| ATR% < 0.3% | −2 |
+
+Min-Score zum Starten: **4+** | ATR% dient als Tiebreaker bei gleichem Score.
+
+### Start/Stop-Logik
+
+**Starten** (Score ≥ `SCAN_MIN_SCORE`, kein BEAR/EXTREME, Balance ausreichend):
+- Regime SIDEWAYS → Grid-Bot via `/api/grid/start`
+- Regime BULL/VOLATILE → Trend-Bot via `/api/bot/start`
+
+**Stoppen** (kein offener Trade + `consecutive_sl ≥ 3` + BEAR/SIDEWAYS):
+- Stopp via `/api/bot/stop` oder `/api/grid/stop`
+
+### scanner.conf
+
+```bash
+SCAN_INTERVAL_SECONDS=1800       # 30 Min Scan-Intervall
+SCAN_MIN_VOLUME_EUR=500000        # Mindest-Volumen 24h
+SCAN_MIN_SCORE=4                  # Mindest-Score zum Starten
+SCAN_MAX_BOTS=10                  # Max gleichzeitige Bots
+SCAN_MIN_CAPITAL_PER_BOT=20      # Mindestkapital pro Bot in EUR
+SCAN_CONSECUTIVE_SL_THRESHOLD=3  # SL-Hits bevor Bot gestoppt wird
+SCAN_DRY_RUN=false                # true = nur loggen, kein Start/Stopp
+```
+
+### Scanner starten
+
+```bash
+botvenv/bin/python scanner.py --once      # Einmalig testen
+sudo systemctl start tradingbot-scanner   # Service
+journalctl -fu tradingbot-scanner         # Logs live
+
+# Scan-Historie
+sqlite3 /root/bot/db/scanner.db \\
+  "SELECT ts, active_bots, bots_started, bots_stopped FROM scan_history ORDER BY ts DESC LIMIT 3;"
+```
+
+Tägliche Telegram-Zusammenfassung um 08:00 UTC: aktive Bots, P&L 24h, Top-Coins, Staking-Summe.
 
 ## Bot starten
 
@@ -662,6 +754,60 @@ botvenv/bin/python main.py --symbol XRP/EUR \
 | `--htf-slow N` | `21` | SMA-Periode für HTF-Trend-Beurteilung (langsam) |
 
 ---
+
+
+---
+
+## Grid-Bot (`grid_bot.py`)
+
+Strategie für **SIDEWAYS-Märkte**: Limit-Orders in gleichmäßigen Abständen um den Kurs.
+Profitiert von Kursoszillationen ohne klaren Trend.
+
+### Funktionsweise
+
+```
+Kurs: 2000 EUR (ETH), Step=0.8%, Levels=3
+
+Sell @ 2048.24  (+3x0.8%)
+Sell @ 2032.12  (+2x0.8%)
+Sell @ 2016.00  (+1x0.8%)
+----------- 2000 EUR ---- Kurs
+Buy  @ 1984.00  (-1x0.8%)
+Buy  @ 1968.13  (-2x0.8%)
+Buy  @ 1952.38  (-3x0.8%)
+
+Buy @ 1984 gefuellt -> Sell @ 2000 platziert (+0.8%)
+Sell @ 2000 gefuellt -> Buy @ 1984 platziert
+Roundtrip-Profit: 0.8% - 2x0.16% Maker-Fee ~ 0.48%
+```
+
+### CLI-Optionen
+
+```bash
+botvenv/bin/python grid_bot.py --symbol ETH/EUR --levels 3 --step 0.008 --amount 25 [--dry-run]
+```
+
+| Option | Standard | Beschreibung |
+|--------|----------|--------------|
+| `--symbol` | `ETH/EUR` | Handels-Paar |
+| `--levels` | `3` | Levels über und unter Kurs |
+| `--step` | `0.008` | Abstand zwischen Levels (0.8%) |
+| `--amount` | `20.0` | EUR pro Level |
+| `--dry-run` | – | Kein echter Handel |
+| `--no-regime-check` | – | Regime-Check deaktivieren |
+
+Mindest-Schritt: **0.4%** (= 2x0.16% Gebühren). Empfehlung: **0.8%** -> ~0.48% Netto-Profit/Runde.
+
+Auto-Stopp bei BEAR/EXTREME-Regime. Supervisor und Scanner schalten dann auf Trend-Bot um.
+
+### systemd
+
+```bash
+systemctl start tradingbot-grid@ETH_EUR
+journalctl -fu tradingbot-grid@ETH_EUR
+sqlite3 /root/bot/db/grid_ETH_EUR.db \\
+  "SELECT side, price, status, pnl_eur FROM grid_orders ORDER BY created_at DESC LIMIT 20;"
+```
 
 ## Web-Dashboard
 
@@ -746,6 +892,17 @@ Zeigt alle auf Kraken gehaltenen Coins mit Menge, EUR-Wert, aktuellem Kurs und Z
 | Bot | **▶ Bot**: öffnet „Bot hinzufügen"-Dialog mit Symbol vorausgefüllt · **● läuft**: Bot ist aktiv |
 
 **Direktverkauf ohne Bot**: Sofortiger Marktverkauf direkt über Kraken – kein laufender Bot nötig. Offene Trades in der DB werden automatisch geschlossen.
+
+### Staking / Earn
+
+Zeigt alle aktiven Kraken-Earn-Positionen (Menge, EUR-Wert, Gesamt-Summe).
+Daten via `/api/staking`, alle 5 Minuten aktualisiert.
+Die Staking-Summe fließt in die tägliche Telegram-Zusammenfassung des Scanners ein.
+
+### Grid-Bot Status
+
+Grid-Bots erscheinen im Dashboard als eigene Sektion.
+Grid-DBs (`db/grid_*.db`) werden getrennt von Trend-Bot-DBs behandelt.
 
 ### Collapse-Zustand nach Reload
 
@@ -1064,32 +1221,45 @@ bash /tmp/install.sh
 
 ## Changelog
 
-### 2026-03-31 — Migration auf CAT-TRADING + Parameter-Optimierung
+### 2026-04-11 — Trend-Scanner, Grid-Bot, Supervisor Bot-Typ-Management
 
-**Infrastruktur:**
-- Bot migriert von CAT (Raspberry Pi) → CAT-TRADING (LXC CT 101 auf CAT-MAMA / Proxmox VE 9.1)
-- CAT-TRADING: 192.168.2.101, 4 Cores, 2GB RAM, Debian 12
-- Web-Dashboard: http://192.168.2.101:5001
+**Trend-Scanner (`scanner.py`, `bot/scanner_score.py`, `bot/scanner_notify.py`):**
+- Scannt alle Kraken EUR-Paare (≥500k EUR/24h) alle 30 Minuten
+- Scoring: Regime, ADX, RSI, SMA50/200, Volume-Surge, ATR% (Tiebreaker)
+- Start: Score ≥ 4, max 10 Bots, min 20€/Bot, Regime-bewusster Bot-Typ
+- Stopp: `consecutive_sl ≥ 3` + BEAR/SIDEWAYS + kein offener Trade
+- Tägliche Telegram-Zusammenfassung 08:00 UTC (inkl. Staking-Summe)
+- Systemd: `tradingbot-scanner.service`
 
-**Parameter-Anpassungen (nach Datenanalyse, 34 Trades):**
+**Grid-Bot (`grid_bot.py`, `systemd/tradingbot-grid@.service`):**
+- Limit-Raster-Strategie für SIDEWAYS-Märkte
+- Empfehlung: `--step 0.008` -> ~0.48% Netto-Profit pro Runde
+- Automatischer Stopp bei BEAR/EXTREME
+- DB: `db/grid_<SYMBOL>.db` (getrennt von Trend-Bot-DBs)
 
-| Parameter | Alt | Neu | Begründung |
-|---|---|---|---|
-|  | 3% | 1.5% | Max-Verlust halbiert, viele 3%-SL-Treffer |
-|  | 4% | 0.8% | SL→Breakeven sobald Gebühren gedeckt (~0.52% RT) |
-|  | 5% | 2-3% | Gewinne früher sichern |
-|  | 1.2 | 1.5 | Strengere Volumen-Anforderung |
-|  ETH | fehlte | hinzugefügt | ETH hatte 0% Win-Rate |
+**Supervisor Bot-Typ-Management:**
+- Wechselt automatisch Bot-Typ bei Regimeänderung (ohne `.env`)
+- SIDEWAYS → Grid-Bot, BULL/VOLATILE → Trend-Bot, BEAR/EXTREME → stoppen
 
-**Bekanntes Problem:**
--  berücksichtigt keine Trading-Gebühren (~0.52% pro Round-Trip)
-- Optimizer wählt dadurch Strategien die real verlieren (viele kleine Wins < Gebühren)
-- **TODO:**  Parameter in  einbauen
+**Dashboard / API:**
+- `/api/staking`: Kraken-Earn-Positionen (USD→EUR via Live-Rate)
+- `/api/grid/status`: Status aktiver Grid-Bots
+- Staking-Sektion im Dashboard (alle 5 Min)
 
+**Bugfixes:**
+- Scanner sah immer 0 Bots (`process_running` vs `running`) → OOM-Risiko behoben
+- `is-active`-Check vor Bot-Start (kein Duplicate-Start)
+- LXC RAM 2 → 4 GB erhöht
+
+**Performance-Filter (main.py):**
+- SIDEWAYS-Filter: BUY blockiert wenn Regime=SIDEWAYS und ADX < 25
+- Konsekutive SL-Pause: 3 SL-Hits → 24h Auto-Pause
+- ATR-Sizing: hohe Volatilität → kleinere Positionen (min 30%)
+- SL-Schutz-Sizing: 2 konsekutive SL-Hits → 50% Positions-Größe
 
 ---
 
-## Changelog
+
 
 ### 2026-03-31 — Migration auf CAT-TRADING + Parameter-Optimierung
 
