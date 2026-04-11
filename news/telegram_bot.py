@@ -591,6 +591,13 @@ class TelegramNewsBot:
             await self._handle_start_bot(query, data.get("symbol", ""), event_id)
         elif action == "apply_supervisor":
             await self._handle_apply_supervisor(query, data.get("symbol", ""))
+        elif action == "revert_supervisor":
+            await self._handle_revert_supervisor(
+                query,
+                data.get("symbol", ""),
+                data.get("prev_trailing", False),
+                data.get("prev_vol", False),
+            )
         else:
             await query.edit_message_text("❓ Unbekannte Aktion")
 
@@ -670,6 +677,28 @@ class TelegramNewsBot:
         else:
             await query.message.reply_text(
                 f"❌ Fehler: {result['error']}", parse_mode="HTML"
+            )
+
+    async def _handle_revert_supervisor(self, query, symbol: str, prev_trailing: bool, prev_vol: bool):
+        """Rükgängig: stellt die Einstellungen vor dem Supervisor-Auto-Apply wieder her."""
+        result = _call_set_runtime_params(
+            self.cfg.web_api_base, symbol,
+            trailing_sl=prev_trailing,
+            volume_filter=prev_vol,
+        )
+        if result["ok"]:
+            trail_s  = "✅ an" if prev_trailing else "❌ aus"
+            vol_s    = "✅ an" if prev_vol      else "❌ aus"
+            text = (
+                f"↩ <b>Rükgängig: {symbol}</b>\n"
+                f"Trailing-SL: <b>{trail_s}</b>  Volume-Filter: <b>{vol_s}</b>\n"
+                f"<i>Wirkt beim nächsten Loop (~60s)</i>"
+            )
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(text, parse_mode="HTML")
+        else:
+            await query.message.reply_text(
+                f"❌ Rükgängig fehlgeschlagen: {result['error']}", parse_mode="HTML"
             )
 
     def _apply_supervisor_for(self, symbol: str) -> dict:

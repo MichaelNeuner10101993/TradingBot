@@ -218,11 +218,28 @@ def _write(
             val_pnl=best.get("val_pnl"),
         )
 
-        # Telegram-Empfehlung wenn Supervisor-Empfehlung ≠ aktuelle Bot-Einstellung
+        # Auto-Anwenden wenn Supervisor-Empfehlung ≠ aktuelle Bot-Einstellung
         cur_trailing = db.get_state("use_trailing_sl", "False").lower() == "true"
         cur_vol      = db.get_state("volume_filter",   "False").lower() == "true"
-        if best.get("use_trailing_sl", False) != cur_trailing or best.get("volume_filter", False) != cur_vol:
-            notify.send_supervisor_recommendation(symbol, best, cur_trailing, cur_vol)
+        rec_trailing = best.get("use_trailing_sl", False)
+        rec_vol      = best.get("volume_filter",   False)
+        if rec_trailing != cur_trailing or rec_vol != cur_vol:
+            # Vorherige Werte für Rükgängig sichern
+            db.set_state("supervisor_prev_trailing_sl",    str(cur_trailing))
+            db.set_state("supervisor_prev_volume_filter",  str(cur_vol))
+            # Auto-Anwenden via Web-API
+            import requests as _req_auto
+            try:
+                _req_auto.post(
+                    f"{WEB_API}/api/bot/set_runtime_params",
+                    json={"symbol": symbol, "trailing_sl": rec_trailing, "volume_filter": rec_vol},
+                    timeout=10,
+                )
+                log.info(f"Supervisor auto-apply {symbol}: trailing={rec_trailing} vol={rec_vol}")
+            except Exception as _e_auto:
+                log.warning(f"Supervisor auto-apply Web-API Fehler ({symbol}): {_e_auto}")
+            # Telegram-Benachrichtigung mit Rükgängig-Button
+            notify.send_supervisor_auto_applied(symbol, best, cur_trailing, cur_vol, rec_trailing, rec_vol)
 
         # Proaktive Strategie-Update-Nachricht (Regime-Wechsel ODER SQN-Sprung ≥ 0.5)
         regime_changed = bool(prev_regime) and prev_regime != regime

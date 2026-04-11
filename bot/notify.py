@@ -149,20 +149,47 @@ def send_supervisor_recommendation(
     cur_trailing: bool,
     cur_vol: bool,
 ):
-    """Telegram-Empfehlung wenn Supervisor eine bessere Feature-Kombination gefunden hat."""
-    trailing_rec = "✅ an" if best.get("use_trailing_sl") else "❌ aus"
-    vol_rec      = "✅ an" if best.get("volume_filter")   else "❌ aus"
-    cur_trail_s  = "an"   if cur_trailing                 else "aus"
-    cur_vol_s    = "an"   if cur_vol                      else "aus"
-    val_str = f"  val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
+    """Veraltet - wird nicht mehr genutzt (auto-apply ersetzt manuelles Übernehmen)."""
+    pass
+
+
+def send_supervisor_auto_applied(
+    symbol: str,
+    best: dict,
+    prev_trailing: bool,
+    prev_vol: bool,
+    new_trailing: bool,
+    new_vol: bool,
+):
+    """Benachrichtigung: Supervisor hat Empfehlung automatisch angewendet + Rükgängig-Button."""
+    import json
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    def _fmt_flag(val: bool) -> str:
+        return "✅ an" if val else "❌ aus"
+
+    val_str  = f"  val={best['val_pnl']:+.2f}%" if best.get("val_pnl") is not None else ""
+    changes  = []
+    if new_trailing != prev_trailing:
+        changes.append(f"Trailing-SL: {_fmt_flag(prev_trailing)} → <b>{_fmt_flag(new_trailing)}</b>")
+    if new_vol != prev_vol:
+        changes.append(f"Volume-Filter: {_fmt_flag(prev_vol)} → <b>{_fmt_flag(new_vol)}</b>")
+
     text = (
-        f"🤖 <b>Supervisor-Empfehlung: {symbol}</b>\n"
+        f"🤖 <b>Supervisor auto-angewendet: {symbol}</b>\n"
         f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>\n"
-        f"Trailing-SL: {cur_trail_s} → <b>{trailing_rec}</b>  "
-        f"Volume-Filter: {cur_vol_s} → <b>{vol_rec}</b>\n"
-        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}"
+        + "\n".join(changes) + "\n"
+        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
+        f"<i>Wirkt beim nächsten Loop (~60s)</i>"
     )
-    _send_sync(text)
+    revert_payload = json.dumps({
+        "action": "revert_supervisor",
+        "symbol": symbol,
+        "prev_trailing": prev_trailing,
+        "prev_vol": prev_vol,
+    }, separators=(",", ":"))
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("↩ Rükgängig", callback_data=revert_payload)]])
+    _send_sync(text, reply_markup=keyboard)
 
 
 def send_peer_strategy(
