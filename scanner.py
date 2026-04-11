@@ -33,6 +33,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from bot.config import ExchangeConfig, OpsConfig
 from bot.data_feed import build_exchange
+from bot.scanner_notify import send_scanner_started, send_scanner_stopped
 from bot.persistence import StateDB
 from bot.scanner_score import score_pair, is_eligible_to_start, is_candidate_for_stop, PairScore
 
@@ -455,8 +456,16 @@ def run_scan_cycle(
             if not dry_run:
                 if stop_bot_api(sym, api_url, log):
                     bots_stopped.append(sym)
+                    send_scanner_stopped(
+                        sym, stop_reason, regime,
+                        state["consecutive_sl"], dry_run=False
+                    )
             else:
                 bots_stopped.append(f"{sym}(dry)")
+                send_scanner_stopped(
+                    sym, stop_reason, regime,
+                    state["consecutive_sl"], dry_run=True
+                )
 
     # ── 6. START-PHASE ─────────────────────────────────────────────────────────
     bots_started: list[str] = []
@@ -503,6 +512,13 @@ def run_scan_cycle(
                 bots_started.append(ps.symbol)
                 active_symbols.add(ps.symbol)
                 slots -= 1
+                send_scanner_started(
+                    ps.symbol, ps.total, ps.regime, ps.adx, ps.rsi_val,
+                    elig_reason,
+                    len(active_symbols) - 1,
+                    _cfg_int(cfg, "SCAN_MAX_BOTS"),
+                    balance_eur, dry_run=False
+                )
         else:
             bots_started.append(f"{ps.symbol}(dry)")
             slots -= 1
