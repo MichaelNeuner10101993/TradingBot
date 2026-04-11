@@ -1,0 +1,18 @@
+[Unit]
+Description=CAT-TRADING Grid-Bot - %i
+After=network.target tradingbot-web.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bot
+EnvironmentFile=/root/bot/.env
+ExecStart=/root/bot/botvenv/bin/python /root/bot/grid_bot.py --symbol %I --levels 3 --step 0.008 --amount 20
+Restart=on-failure
+RestartSec=60
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -489,6 +489,31 @@ def api_balance():
 
 _staking_cache: dict = {"data": None, "ts": 0.0}
 
+@app.route("/api/grid/status")
+def api_grid_status():
+    result = []
+    db_dir = os.path.join(PROJECT_ROOT, "db")
+    import glob as _gl, sqlite3 as _sql
+    for pid_file in _gl.glob(os.path.join(db_dir, "grid_*.pid")):
+        sym_safe = os.path.basename(pid_file)[5:-4]
+        symbol   = sym_safe.replace("_", "/", 1)
+        running  = False
+        try:
+            with open(pid_file) as f: pid = int(f.read().strip())
+            os.kill(pid, 0); running = True
+        except Exception: pass
+        pnl, trades = 0.0, 0
+        db_path = os.path.join(db_dir, f"grid_{sym_safe}.db")
+        try:
+            conn = _sql.connect(db_path, timeout=2)
+            pnl    = conn.execute("SELECT SUM(pnl_eur) FROM grid_orders WHERE status='filled'").fetchone()[0] or 0.0
+            trades = conn.execute("SELECT COUNT(*) FROM grid_orders WHERE status='filled'").fetchone()[0] or 0
+            conn.close()
+        except Exception: pass
+        result.append({"symbol": symbol, "running": running, "pnl_eur": round(pnl,4), "trades": trades})
+    return jsonify(result)
+
+
 @app.route("/api/staking")
 def api_staking():
     import time as _t
