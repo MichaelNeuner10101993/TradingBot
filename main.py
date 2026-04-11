@@ -444,6 +444,24 @@ def main():
 
                 # 4) SL/TP prüfen (höchste Priorität)
                 open_trades = db.get_open_trades(bot_cfg.symbol)
+
+                # Zeitbasierter Exit: Trade > 24h alt UND Kurs unter Entry → schließen
+                _TIME_STOP_H   = 24    # Stunden bis zum Time-Stop
+                _TIME_STOP_PNL = 0.0   # Exit wenn Preis <= Entry (kein Gewinn)
+                for _ot in open_trades:
+                    try:
+                        _opened = datetime.fromisoformat(_ot["opened_at"]).replace(tzinfo=timezone.utc)
+                        _age_h  = (datetime.now(timezone.utc) - _opened).total_seconds() / 3600
+                        _entry  = float(_ot["entry_price"])
+                        if _age_h >= _TIME_STOP_H and last_price <= _entry * (1 + _TIME_STOP_PNL):
+                            log.warning(
+                                f"Time-Stop: Trade {_ot['client_id'][:12]} "
+                                f"ist {_age_h:.0f}h alt | Kurs {last_price:.4f} <= Entry {_entry:.4f} → Schliessen"
+                            )
+                            db.update_trade_sltp(_ot["client_id"], last_price * 0.9999, float(_ot["tp_price"]))
+                    except Exception as _te:
+                        log.debug(f"Time-Stop Fehler: {_te}")
+
                 triggered   = sl_tp.check(last_price, open_trades)
                 for hit in triggered:
                     trade  = hit["trade"]

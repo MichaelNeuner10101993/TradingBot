@@ -37,6 +37,12 @@ def calc_levels(
             tp_price = entry_price + cfg.atr_tp_mult * atr_val
             sl_pct   = (entry_price - sl_price) / entry_price * 100
             tp_pct   = (tp_price - entry_price) / entry_price * 100
+            # TP-Cap: ATR-TP nie über MAX_TP_PCT (verhindert unrealistische Ziele)
+            MAX_TP_PCT = 0.05  # 5% Maximum
+            if tp_pct / 100 > MAX_TP_PCT:
+                tp_price = entry_price * (1 + MAX_TP_PCT)
+                tp_pct   = MAX_TP_PCT * 100
+                log.info(f"ATR-TP gecappt auf {MAX_TP_PCT*100:.0f}% Maximum")
             log.info(
                 f"ATR-Level: ATR={atr_val:.6f} "
                 f"| SL={sl_price:.6f} (-{sl_pct:.2f}%) "
@@ -52,9 +58,10 @@ def calc_levels(
             else:
                 return sl_price, tp_price
 
-    # Fallback: feste Prozentsätze
+    # Fallback: feste Prozentsätze (TP gecappt auf max 5%)
+    _tp_pct  = min(cfg.take_profit_pct, 0.05)
     sl_price = entry_price * (1 - cfg.stop_loss_pct)
-    tp_price = entry_price * (1 + cfg.take_profit_pct)
+    tp_price = entry_price * (1 + _tp_pct)
     log.info(
         f"Feste Level (ATR nicht verfügbar): "
         f"SL={sl_price:.6f} (-{cfg.stop_loss_pct*100:.1f}%) "
