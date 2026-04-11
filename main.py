@@ -14,7 +14,7 @@ import uuid
 import ccxt
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from bot.config import ExchangeConfig, BotConfig, RiskConfig, OpsConfig
 from bot.ops import setup_logging, CircuitBreaker
 from bot.data_feed import DataFeed, build_exchange
@@ -327,6 +327,30 @@ def main():
                     log.info("BEAR-Regime: BUY → HOLD (Abwärtstrend erkannt, kein neuer Kauf)")
                     signal = "HOLD"
 
+                # SIDEWAYS mit niedrigem ADX: BUY unterdrücken (kein klarer Trend)
+                if signal == "BUY" and _sv.get("supervisor_regime") == "SIDEWAYS":
+                    _sv_adx = float(_sv.get("supervisor_adx", "25") or "25")
+                    if _sv_adx < 25.0:
+                        log.info(
+                            f"SIDEWAYS-Filter: BUY → HOLD (ADX={_sv_adx:.1f} < 25 – "
+                            f"kein klarer Trend, Einstieg blockiert)"
+                        )
+                        signal = "HOLD"
+
+                # Auto-Unpause prüfen (24h-Pause nach konsekutiven SL-Hits)
+                _pause_until = _sv.get("pause_until", "")
+                if _paused and _pause_until:
+                    try:
+                        if datetime.now(timezone.utc) > datetime.fromisoformat(_pause_until):
+                            db.set_state("paused", "false")
+                            db.set_state("pause_until", "")
+                            db.set_state("consecutive_sl", "0")
+                            _paused = False
+                            log.info("Auto-Unpause: 24h SL-Schutzpause abgelaufen – Handel fortgesetzt")
+                            notify.send_telegram(f"▶ {bot_cfg.symbol}: Auto-Unpause – 24h SL-Pause abgelaufen")
+                    except Exception as _ue:
+                        log.warning(f"Auto-Unpause Fehler: {_ue}")
+
                 # --- Sentiment-Filter ---
                 _s_score_raw = _sv.get("current_sentiment_score", "")
                 _s_score = float(_s_score_raw) if _s_score_raw else None
@@ -451,6 +475,26 @@ def main():
                         )
                         if reason == "sl_hit":
                             db.set_state("last_sl_at", utcnow())
+                            # Konsekutive SL-Zählung: 3 in Folge → 24h Pause
+                            _consec_sl = int(db.get_state("consecutive_sl", "0") or "0") + 1
+                            db.set_state("consecutive_sl", str(_consec_sl))
+                            log.info(f"Konsekutive SL-Hits: {_consec_sl}")
+                            if _consec_sl >= 3:
+                                _pause_ts = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+                                db.set_state("paused", "true")
+                                db.set_state("pause_until", _pause_ts)
+                                db.set_state("pause_reason", f"{_consec_sl}× konsekutive SL-Hits")
+                                log.warning(
+                                    f"SL-SCHUTZ: {_consec_sl} konsekutive SL-Hits → "
+                                    f"24h Pause bis {_pause_ts[:16]}"
+                                )
+                                notify.send_telegram(
+                                    f"⛔ {bot_cfg.symbol}: {_consec_sl}× SL in Folge → "
+                                    f"24h Pause bis {_pause_ts[11:16]} UTC"
+                                )
+                        else:
+                            # Gewinn oder Breakeven → Zähler zurücksetzen
+                            db.set_state("consecutive_sl", "0")
                         exit_price = trade["tp_price"] if reason == "tp_hit" else trade["sl_price"]
                         pnl_eur    = (exit_price - float(trade["entry_price"])) * float(trade["amount"])
                         notify.send_trade_sell(
@@ -521,6 +565,29 @@ def main():
                                 f"Position-Sizing: 50% wegen Drawdown "
                                 f"{_drawdown_pct * 100:.1f}%"
                             )
+
+                        # ATR-basiertes Position-Sizing: volatile Coins kleiner handeln
+                        _atr_pct_sv = float(_sv.get("supervisor_atr_pct", "0") or "0")
+                        if _atr_pct_sv > 0:
+                            # Referenz-ATR: 1.5% → 1.0x, 3% → 0.5x, 0.5% → 1.0x (cap bei 1.0)
+                            _atr_size_mult = min(1.0, 1.5 / _atr_pct_sv)
+                            _atr_size_mult = max(0.3, _atr_size_mult)
+                            if _atr_size_mult < 0.95:
+                                _buy_amount *= _atr_size_mult
+                                log.info(
+                                    f"ATR-Sizing: {_atr_pct_sv:.2f}% ATR → "
+                                    f"{_atr_size_mult:.2f}× Position ({_buy_amount * last_price:.2f}€)"
+                                )
+
+                        # Konsekutive SL-Hits: Position bei 2 Hits halbieren
+                        _consec_now = int(db.get_state("consecutive_sl", "0") or "0")
+                        if _consec_now >= 2:
+                            _buy_amount *= 0.5
+                            log.warning(
+                                f"SL-Schutz-Sizing: {_consec_now}× konsekutive SL-Hits → "
+                                f"50% Position-Größe ({_buy_amount * last_price:.2f}€)"
+                            )
+
                         executor.buy(_buy_amount, last_price, candles)
                     elif signal == "SELL":
                         executor.sell(risk.calc_sell_amount(balance), last_price)
@@ -571,6 +638,8 @@ def main():
                 db.set_state("sentiment_stop_enabled",   str(risk_cfg.sentiment_stop_enabled))
                 db.set_state("sentiment_stop_threshold", str(risk_cfg.sentiment_stop_threshold))
                 db.set_state("status",                 "paused" if _paused else "running")
+                db.set_state("consecutive_sl",         db.get_state("consecutive_sl", "0"))
+                db.set_state("pause_until",            db.get_state("pause_until", ""))
 
                 # Feature 4: Täglicher Cleanup (orders + errors älter als cleanup_days)
                 _last_cleanup = db.get_state("last_cleanup", "")

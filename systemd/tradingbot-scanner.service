@@ -1,0 +1,19 @@
+[Unit]
+Description=CAT-TRADING Trend Scanner – Dynamische Coin-Auswahl
+After=network-online.target tradingbot-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bot
+ExecStart=/root/bot/botvenv/bin/python /root/bot/scanner.py
+Restart=on-failure
+RestartSec=60s
+TimeoutStopSec=120s
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
