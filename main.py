@@ -619,11 +619,14 @@ def main():
 
                         executor.buy(_buy_amount, last_price, candles)
                     elif signal == "SELL":
-                        executor.sell(risk.calc_sell_amount(balance), last_price)
-                        notify.send_trade_sell(
-                            bot_cfg.symbol, balance["base"], last_price,
-                            "signal_close", dry_run=bot_cfg.dry_run,
-                        )
+                        _sell_result = executor.sell(risk.calc_sell_amount(balance), last_price)
+                        if _sell_result is not None:
+                            notify.send_trade_sell(
+                                bot_cfg.symbol, balance["base"], last_price,
+                                "signal_close", dry_run=bot_cfg.dry_run,
+                            )
+                        else:
+                            log.debug("SELL-Notify unterdrueckt: kein Guthaben")
 
                 # 7) Zustand für Web-Interface persistieren
                 db.set_state("symbol",         bot_cfg.symbol)
