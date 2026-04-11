@@ -575,6 +575,16 @@
     .news-tip .nt-title { font-weight:bold; color:#e6edf3; }
     .news-tip .nt-src   { font-size:10px; color:#8b949e; margin-top:3px; }
     .news-tip .nt-score { font-size:11px; margin-top:4px; }
+
+    /* Chart Zeitraum-Buttons */
+    .chart-range-btns { display:flex; gap:4px; margin-bottom:4px; }
+    .chart-range-btns button {
+      background:#21262d; border:1px solid #30363d; color:#8b949e;
+      border-radius:4px; padding:2px 8px; font-size:10px; cursor:pointer;
+      font-family:monospace; transition:all .15s;
+    }
+    .chart-range-btns button:hover  { border-color:#8b949e; color:#e6edf3; }
+    .chart-range-btns button.active { background:#388bfd22; border-color:#388bfd; color:#58a6ff; }
   </style>
 </head>
 <body>
@@ -1157,6 +1167,12 @@
     <!-- 24h Kerzen-Chart -->
     <div class="sub-section">
       <h3>Kurs – letzte 24h <span style="color:#8b949e;font-size:11px;font-weight:normal">(5m)</span></h3>
+      <div class="chart-range-btns" id="chart-btns-{{ loop.index }}">
+        <button class="active" data-hours="1">1h</button>
+        <button data-hours="4">4h</button>
+        <button data-hours="12">12h</button>
+        <button data-hours="24">24h</button>
+      </div>
       <canvas id="candle-{{ loop.index }}" height="180"
               style="width:100%;display:block;cursor:crosshair"
               data-symbol="{{ bot.symbol }}"></canvas>
@@ -1434,17 +1450,49 @@
 
         /* Daten laden */
         let newsMarkers = [];
+        let allCandles  = [];
+        let activeHours = 1;
+
+        /* Range-Buttons */
+        const btnsEl = document.getElementById('chart-btns-{{ loop.index }}');
+        if (btnsEl) {
+          btnsEl.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => {
+              btnsEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+              btn.classList.add('active');
+              activeHours = parseInt(btn.dataset.hours);
+              const slice = sliceCandles(allCandles, activeHours);
+              drawChart(slice, filterMarkers(newsMarkers, slice));
+            });
+          });
+        }
+
+        function sliceCandles(candles, hours) {
+          const n = Math.round(hours * 60 / 5);  /* 5m candles */
+          return candles.slice(-n);
+        }
+
+        function filterMarkers(markers, candles) {
+          if (!candles.length) return markers;
+          const t0 = candles[0].t, t1 = candles[candles.length-1].t;
+          return markers.filter(m => m.ts >= t0 && m.ts <= t1 + 300000);
+        }
         Promise.all([
           fetch('/api/candles/'      + apiSym).then(r => r.json()).catch(() => ({ok:false,candles:[]})),
           fetch('/api/news_markers/' + apiSym).then(r => r.json()).catch(() => ({ok:false,markers:[]})),
         ]).then(([cj, nj]) => {
+          allCandles  = cj.ok ? cj.candles : [];
           newsMarkers = nj.ok ? nj.markers : [];
-          drawChart(cj.ok ? cj.candles : [], newsMarkers);
+          const slice = sliceCandles(allCandles, activeHours);
+          drawChart(slice, filterMarkers(newsMarkers, slice));
         });
 
         /* Bei Fenstergröße neu zeichnen */
         window.addEventListener('resize', () => {
-          if (ohlcv.length) drawChart(ohlcv, newsMarkers);
+          if (allCandles.length) {
+            const slice = sliceCandles(allCandles, activeHours);
+            drawChart(slice, filterMarkers(newsMarkers, slice));
+          }
         });
       })();
       </script>
