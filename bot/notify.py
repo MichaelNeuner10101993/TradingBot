@@ -97,7 +97,7 @@ def send_trade_sell(
         fee = exit_price * amount * KRAKEN_FEE * 2
         net = pnl_eur - fee
         sign = "+" if net >= 0 else ""
-        pnl_line = f"\nP&L: <b>{sign}{net:.2f} EUR</b>"
+        pnl_line = f"\nP&amp;L: <b>{sign}{net:.2f} EUR</b>"
 
     text = (
         f"{emoji} <b>{label} {symbol}</b>{dry_tag}\n"
@@ -179,16 +179,22 @@ def send_supervisor_auto_applied(
         f"🤖 <b>Supervisor auto-angewendet: {symbol}</b>\n"
         f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>\n"
         + "\n".join(changes) + "\n"
-        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
+        f"Sim-P&amp;L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
         f"<i>Wirkt beim nächsten Loop (~60s)</i>"
     )
     revert_payload = json.dumps({
-        "action": "revert_supervisor",
-        "symbol": symbol,
-        "prev_trailing": prev_trailing,
-        "prev_vol": prev_vol,
+        "a": "rv",
+        "s": symbol,
+        "t": int(prev_trailing),
+        "v": int(prev_vol),
     }, separators=(",", ":"))
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("↩ Rükgängig", callback_data=revert_payload)]])
+    # Sicherheits-Check: Telegram-Limit = 64 Bytes
+    if len(revert_payload.encode()) > 64:
+        revert_payload = None
+    keyboard = (
+        InlineKeyboardMarkup([[InlineKeyboardButton("↩ Rükgängig", callback_data=revert_payload)]])
+        if revert_payload else None
+    )
     _send_sync(text, reply_markup=keyboard)
 
 
@@ -202,7 +208,7 @@ def send_peer_strategy(
     text = (
         f"🔗 <b>Peer-Strategie uebernommen: {symbol}</b>\n"
         f"Strategie: <b>{peer_strat['name']} {peer_strat['fast']}/{peer_strat['slow']}</b>\n"
-        f"Peer P&L: {peer_strat['sim_pnl']:+.2f}%{val_str}  SQN={peer_strat['sqn']:.2f}\n"
+        f"Peer P&amp;L: {peer_strat['sim_pnl']:+.2f}%{val_str}  SQN={peer_strat['sqn']:.2f}\n"
         f"Lokal getestet: <b>{local_pnl:+.2f}%</b>"
     )
     _send_sync(text)
@@ -226,7 +232,7 @@ def send_strategy_learned(
         f"Regime: {regime_str}\n"
         f"Strategie: <b>{best['name']} {best['fast']}/{best['slow']}</b>  "
         f"{'↑SL ' if best.get('use_trailing_sl') else ''}{'Vol ' if best.get('volume_filter') else ''}\n"
-        f"Sim-P&L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
+        f"Sim-P&amp;L: <b>{best['pnl_pct']:+.2f}%</b>{val_str}  SQN={best.get('sqn', 0):.2f}\n"
         f"Delta SQN: {sqn_delta:+.2f}  {rsi_str}"
     )
     _send_sync(text)

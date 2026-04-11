@@ -594,9 +594,9 @@ class TelegramNewsBot:
         elif action == "revert_supervisor":
             await self._handle_revert_supervisor(
                 query,
-                data.get("symbol", ""),
-                data.get("prev_trailing", False),
-                data.get("prev_vol", False),
+                data.get("s", data.get("symbol", "")),
+                bool(data.get("t", data.get("prev_trailing", False))),
+                bool(data.get("v", data.get("prev_vol", False))),
             )
         else:
             await query.edit_message_text("❓ Unbekannte Aktion")
