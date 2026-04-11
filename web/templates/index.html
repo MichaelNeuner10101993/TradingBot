@@ -560,9 +560,25 @@
     .market-opt .m-sym   { color: #e6edf3; font-weight: bold; }
     .market-opt .m-base  { color: #8b949e; }
     .market-opt .m-price { color: #58a6ff; text-align: right; font-size: 11px; }
+
+    /* News-Marker Tooltip */
+    .news-tip {
+      position: fixed; z-index: 9999;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 10px 13px;
+      max-width: 340px; pointer-events: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,.65);
+      font-size: 12px; line-height: 1.5; display: none;
+    }
+    .news-tip.bullish { border-color: #3fb950; }
+    .news-tip.bearish { border-color: #f85149; }
+    .news-tip .nt-title { font-weight:bold; color:#e6edf3; }
+    .news-tip .nt-src   { font-size:10px; color:#8b949e; margin-top:3px; }
+    .news-tip .nt-score { font-size:11px; margin-top:4px; }
   </style>
 </head>
 <body>
+<div class="news-tip" id="news-global-tip"></div>
 
 <header>
   <div class="header-brand">
@@ -1160,7 +1176,7 @@
         const TRADE_TP = {{ _ot.tp_price | float if _ot and _ot.tp_price else 'null' }};
         const TRADE_EN = {{ _ot.entry_price | float if _ot and _ot.entry_price else 'null' }};
 
-        function drawChart(data) {
+        function drawChart(data, markers) { markers = markers || [];
           ohlcv = data;
           const dpr    = window.devicePixelRatio || 1;
           const W      = canvas.clientWidth  || canvas.parentElement.clientWidth || 600;
@@ -1180,7 +1196,7 @@
             return;
           }
 
-          const PAD_L = 8, PAD_R = 52, PAD_T = 12, PAD_B = 22;
+          const PAD_L = 8, PAD_R = 52, PAD_T = 12, PAD_B = 36;
           const cw = W - PAD_L - PAD_R;
           const ch = H - PAD_T - PAD_B;
           const n  = data.length;
@@ -1221,6 +1237,31 @@
             const hh = String(d.getHours()).padStart(2,'0');
             const mm = String(d.getMinutes()).padStart(2,'0');
             ctx.fillText(hh + ':' + mm, xOf(i), H - PAD_B + 13);
+          }
+
+          /* News-Marker-Punkte */
+          if (markers.length) {
+            const t0 = data[0].t, t1 = data[data.length-1].t, tRng = t1 - t0 || 1;
+            markers.forEach(mk => {
+              const xm = PAD_L + ((mk.ts - t0) / tRng) * cw;
+              if (xm < PAD_L - 4 || xm > W - PAD_R + 4) return;
+              const col = mk.label === "bullish" ? "#3fb950" : mk.label === "bearish" ? "#f85149" : "#8b949e";
+              const r   = mk.specific ? 4 : 2.5;
+              if (mk.specific) {
+                ctx.setLineDash([2, 3]);
+                ctx.strokeStyle = col + "44";
+                ctx.lineWidth   = 0.8;
+                ctx.beginPath(); ctx.moveTo(xm, PAD_T); ctx.lineTo(xm, H - PAD_B); ctx.stroke();
+                ctx.setLineDash([]);
+              }
+              ctx.beginPath();
+              ctx.arc(xm, H - PAD_B + 10, r, 0, Math.PI * 2);
+              ctx.fillStyle = col;
+              ctx.fill();
+              if (mk.specific) {
+                ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
+              }
+            });
           }
 
           /* Candles */
@@ -1274,18 +1315,59 @@
         }
 
         /* Crosshair / Tooltip */
+        const globalTip = document.getElementById('news-global-tip');
+
         canvas.addEventListener('mousemove', function(e) {
           if (!ohlcv.length) return;
-          const rect = canvas.getBoundingClientRect();
-          const mx   = e.clientX - rect.left;
-          const W    = canvas.clientWidth;
-          const PAD_L = 8, PAD_R = 52;
+          const rect  = canvas.getBoundingClientRect();
+          const mx    = e.clientX - rect.left;
+          const my    = e.clientY - rect.top;
+          const W     = canvas.clientWidth;
+          const cH    = canvas.clientHeight;
+          const PAD_L = 8, PAD_R = 52, PAD_B = 36;
           const cw    = W - PAD_L - PAD_R;
-          const idx   = Math.round((mx - PAD_L) / (cw / ohlcv.length) - 0.5);
+
+          /* Marker-Hover (nur im unteren Strip) */
+          let hovMk = null;
+          if (newsMarkers.length && my > cH - PAD_B - 2) {
+            const t0 = ohlcv[0].t, t1 = ohlcv[ohlcv.length-1].t, tRng = t1 - t0 || 1;
+            let bestD = 14;
+            newsMarkers.forEach(mk => {
+              const xm = PAD_L + ((mk.ts - t0) / tRng) * cw;
+              const d  = Math.abs(mx - xm);
+              if (d < bestD) { bestD = d; hovMk = mk; }
+            });
+          }
+
+          if (hovMk) {
+            const lc  = hovMk.label === 'bullish' ? '#3fb950' : hovMk.label === 'bearish' ? '#f85149' : '#8b949e';
+            const ico = hovMk.label === 'bullish' ? '📈' : hovMk.label === 'bearish' ? '📉' : '➖';
+            const sc  = (hovMk.score >= 0 ? '+' : '') + hovMk.score.toFixed(3);
+            const dt  = new Date(hovMk.ts);
+            const ts  = dt.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+            const badges = hovMk.coins.map(c =>
+              `<span style="background:#21262d;border-radius:3px;padding:0 4px;font-size:10px;color:#8b949e">${c.replace('/EUR','')}</span>`
+            ).join(' ');
+            globalTip.className = 'news-tip ' + hovMk.label;
+            globalTip.innerHTML =
+              `<div class="nt-title">${hovMk.title}</div>` +
+              `<div class="nt-src">🕐 ${ts} · ${hovMk.source}${badges ? ' · ' + badges : ''}</div>` +
+              `<div class="nt-score">${ico} <span style="color:${lc}">${hovMk.label}</span> · Score <b>${sc}</b></div>`;
+            globalTip.style.display = 'block';
+            const tx = Math.min(e.clientX + 14, window.innerWidth - 360);
+            const ty = Math.max(e.clientY - 90, 8);
+            globalTip.style.left = tx + 'px';
+            globalTip.style.top  = ty + 'px';
+            infoEl.textContent = '';
+            return;
+          }
+          globalTip.style.display = 'none';
+
+          const idx = Math.round((mx - PAD_L) / (cw / ohlcv.length) - 0.5);
           if (idx < 0 || idx >= ohlcv.length) { infoEl.textContent = ''; return; }
-          const d  = ohlcv[idx];
-          const dt = new Date(d.t);
-          const ts = dt.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+          const d   = ohlcv[idx];
+          const dt  = new Date(d.t);
+          const ts  = dt.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
           const chg = ((d.c - d.o) / d.o * 100).toFixed(2);
           const col = d.c >= d.o ? '#3fb950' : '#f85149';
           infoEl.innerHTML =
@@ -1296,17 +1378,24 @@
             `C:<b>${d.c.toPrecision(5)}</b>  ` +
             `<span style="color:${col}">${chg >= 0 ? '+' : ''}${chg}%</span>`;
         });
-        canvas.addEventListener('mouseleave', () => { infoEl.textContent = ''; });
+        canvas.addEventListener('mouseleave', () => {
+          infoEl.textContent = '';
+          if (globalTip) globalTip.style.display = 'none';
+        });
 
         /* Daten laden */
-        fetch('/api/candles/' + apiSym)
-          .then(r => r.json())
-          .then(j => { if (j.ok) drawChart(j.candles); else drawChart([]); })
-          .catch(() => drawChart([]));
+        let newsMarkers = [];
+        Promise.all([
+          fetch('/api/candles/'      + apiSym).then(r => r.json()).catch(() => ({ok:false,candles:[]})),
+          fetch('/api/news_markers/' + apiSym).then(r => r.json()).catch(() => ({ok:false,markers:[]})),
+        ]).then(([cj, nj]) => {
+          newsMarkers = nj.ok ? nj.markers : [];
+          drawChart(cj.ok ? cj.candles : [], newsMarkers);
+        });
 
         /* Bei Fenstergröße neu zeichnen */
         window.addEventListener('resize', () => {
-          if (ohlcv.length) drawChart(ohlcv);
+          if (ohlcv.length) drawChart(ohlcv, newsMarkers);
         });
       })();
       </script>

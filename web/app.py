@@ -1148,5 +1148,54 @@ def api_candles(symbol: str):
         return jsonify({"ok": False, "error": str(e)})
 
 
+
+@app.route("/api/news_markers/<path:symbol>")
+def api_news_markers(symbol: str):
+    from datetime import datetime, timezone, timedelta
+    import sqlite3 as _sq, json as _json
+    news_db = os.path.join(PROJECT_ROOT, "db", "news.db")
+    if not os.path.exists(news_db):
+        return jsonify({"ok": True, "markers": []})
+    sym   = symbol.replace("_", "/").upper()
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        con = _sq.connect(news_db)
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT title, source, published_at, coins, sentiment_score, sentiment_label
+            FROM news_events
+            WHERE published_at >= ?
+              AND (coins LIKE ? OR coins = '[]')
+            ORDER BY published_at
+            """,
+            (since, '%"'  + sym + '"%'),
+        )
+        rows = cur.fetchall()
+        con.close()
+        markers = []
+        for title, source, pub, coins_raw, score, label in rows:
+            try:
+                dt    = datetime.fromisoformat(pub)
+                ts_ms = int(dt.timestamp() * 1000)
+            except Exception:
+                continue
+            try:
+                coins_list = _json.loads(coins_raw or "[]")
+            except Exception:
+                coins_list = []
+            markers.append({
+                "ts":       ts_ms,
+                "title":    (title or "")[:140],
+                "source":   source or "",
+                "score":    round(float(score or 0), 3),
+                "label":    label or "neutral",
+                "coins":    coins_list,
+                "specific": sym in coins_list,
+            })
+        return jsonify({"ok": True, "symbol": sym, "markers": markers})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "markers": []})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)
