@@ -1138,6 +1138,180 @@
       </div>
     </div>
 
+    <!-- 24h Kerzen-Chart -->
+    <div class="sub-section">
+      <h3>Kurs – letzte 24h <span style="color:#8b949e;font-size:11px;font-weight:normal">(5m)</span></h3>
+      <canvas id="candle-{{ loop.index }}" height="180"
+              style="width:100%;display:block;cursor:crosshair"
+              data-symbol="{{ bot.symbol }}"></canvas>
+      <div id="candle-info-{{ loop.index }}"
+           style="text-align:right;font-size:11px;color:#8b949e;margin-top:2px;min-height:14px"></div>
+      <script>
+      (function() {
+        const canvas  = document.getElementById('candle-{{ loop.index }}');
+        const infoEl  = document.getElementById('candle-info-{{ loop.index }}');
+        const symbol  = canvas.dataset.symbol;
+        const apiSym  = symbol.replace('/', '_');
+        let   ohlcv   = [];
+
+        /* ── aktiver Trade (SL/TP für Linien) ── */
+        {% set _ot = bot.open_trades[0] if bot.open_trades else none %}
+        const TRADE_SL = {{ _ot.sl_price | float if _ot and _ot.sl_price else 'null' }};
+        const TRADE_TP = {{ _ot.tp_price | float if _ot and _ot.tp_price else 'null' }};
+        const TRADE_EN = {{ _ot.entry_price | float if _ot and _ot.entry_price else 'null' }};
+
+        function drawChart(data) {
+          ohlcv = data;
+          const dpr    = window.devicePixelRatio || 1;
+          const W      = canvas.clientWidth  || canvas.parentElement.clientWidth || 600;
+          const H      = 180;
+          canvas.width  = W * dpr;
+          canvas.height = H * dpr;
+          canvas.style.width  = W + 'px';
+          canvas.style.height = H + 'px';
+          const ctx = canvas.getContext('2d');
+          ctx.scale(dpr, dpr);
+
+          if (!data.length) {
+            ctx.fillStyle = '#8b949e';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('Keine Candle-Daten verfügbar', W / 2, H / 2);
+            return;
+          }
+
+          const PAD_L = 8, PAD_R = 52, PAD_T = 12, PAD_B = 22;
+          const cw = W - PAD_L - PAD_R;
+          const ch = H - PAD_T - PAD_B;
+          const n  = data.length;
+
+          /* Preis-Range inkl. SL/TP */
+          let hi = Math.max(...data.map(d => d.h));
+          let lo = Math.min(...data.map(d => d.l));
+          if (TRADE_SL) { hi = Math.max(hi, TRADE_SL); lo = Math.min(lo, TRADE_SL); }
+          if (TRADE_TP) { hi = Math.max(hi, TRADE_TP); lo = Math.min(lo, TRADE_TP); }
+          if (TRADE_EN) { hi = Math.max(hi, TRADE_EN); lo = Math.min(lo, TRADE_EN); }
+          const margin = (hi - lo) * 0.05 || hi * 0.001;
+          hi += margin; lo -= margin;
+          const range = hi - lo || 1;
+
+          const xOf = i => PAD_L + (i + 0.5) * (cw / n);
+          const yOf = p => PAD_T + ch - ((p - lo) / range) * ch;
+
+          /* Gitter */
+          ctx.strokeStyle = '#21262d';
+          ctx.lineWidth   = 0.5;
+          for (let g = 0; g <= 4; g++) {
+            const y = PAD_T + (g / 4) * ch;
+            ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+            const price = hi - (g / 4) * range;
+            ctx.fillStyle = '#8b949e';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(price.toPrecision(5), W - PAD_R + 3, y + 3);
+          }
+
+          /* Zeitstempel-Achse */
+          ctx.fillStyle = '#8b949e';
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'center';
+          const step = Math.ceil(n / 6);
+          for (let i = 0; i < n; i += step) {
+            const d  = new Date(data[i].t);
+            const hh = String(d.getHours()).padStart(2,'0');
+            const mm = String(d.getMinutes()).padStart(2,'0');
+            ctx.fillText(hh + ':' + mm, xOf(i), H - PAD_B + 13);
+          }
+
+          /* Candles */
+          const cWidth = Math.max(1, cw / n * 0.7);
+          for (let i = 0; i < n; i++) {
+            const d  = data[i];
+            const x  = xOf(i);
+            const up = d.c >= d.o;
+            ctx.strokeStyle = up ? '#3fb950' : '#f85149';
+            ctx.fillStyle   = up ? '#3fb950' : '#f85149';
+
+            /* Wick */
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, yOf(d.h));
+            ctx.lineTo(x, yOf(d.l));
+            ctx.stroke();
+
+            /* Body */
+            const yTop = yOf(Math.max(d.o, d.c));
+            const yBot = yOf(Math.min(d.o, d.c));
+            const bh   = Math.max(1, yBot - yTop);
+            ctx.fillRect(x - cWidth / 2, yTop, cWidth, bh);
+          }
+
+          /* SL / TP / Entry Linien */
+          function hLine(price, color, label) {
+            const y = yOf(price);
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 1;
+            ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle   = color;
+            ctx.font        = 'bold 9px monospace';
+            ctx.textAlign   = 'left';
+            ctx.fillText(label + ' ' + price.toPrecision(5), W - PAD_R + 3, y + 3);
+          }
+          if (TRADE_EN) hLine(TRADE_EN, '#58a6ff', 'EN');
+          if (TRADE_SL) hLine(TRADE_SL, '#f85149', 'SL');
+          if (TRADE_TP) hLine(TRADE_TP, '#3fb950', 'TP');
+
+          /* Aktuelle Preis-Linie (letzte Close) */
+          const lastC = data[data.length - 1].c;
+          const yLast = yOf(lastC);
+          ctx.setLineDash([2, 2]);
+          ctx.strokeStyle = '#8b949e';
+          ctx.lineWidth   = 0.8;
+          ctx.beginPath(); ctx.moveTo(PAD_L, yLast); ctx.lineTo(W - PAD_R, yLast); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        /* Crosshair / Tooltip */
+        canvas.addEventListener('mousemove', function(e) {
+          if (!ohlcv.length) return;
+          const rect = canvas.getBoundingClientRect();
+          const mx   = e.clientX - rect.left;
+          const W    = canvas.clientWidth;
+          const PAD_L = 8, PAD_R = 52;
+          const cw    = W - PAD_L - PAD_R;
+          const idx   = Math.round((mx - PAD_L) / (cw / ohlcv.length) - 0.5);
+          if (idx < 0 || idx >= ohlcv.length) { infoEl.textContent = ''; return; }
+          const d  = ohlcv[idx];
+          const dt = new Date(d.t);
+          const ts = dt.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+          const chg = ((d.c - d.o) / d.o * 100).toFixed(2);
+          const col = d.c >= d.o ? '#3fb950' : '#f85149';
+          infoEl.innerHTML =
+            `<span style="color:#8b949e">${ts}</span>  ` +
+            `O:<b>${d.o.toPrecision(5)}</b>  ` +
+            `H:<b>${d.h.toPrecision(5)}</b>  ` +
+            `L:<b>${d.l.toPrecision(5)}</b>  ` +
+            `C:<b>${d.c.toPrecision(5)}</b>  ` +
+            `<span style="color:${col}">${chg >= 0 ? '+' : ''}${chg}%</span>`;
+        });
+        canvas.addEventListener('mouseleave', () => { infoEl.textContent = ''; });
+
+        /* Daten laden */
+        fetch('/api/candles/' + apiSym)
+          .then(r => r.json())
+          .then(j => { if (j.ok) drawChart(j.candles); else drawChart([]); })
+          .catch(() => drawChart([]));
+
+        /* Bei Fenstergröße neu zeichnen */
+        window.addEventListener('resize', () => {
+          if (ohlcv.length) drawChart(ohlcv);
+        });
+      })();
+      </script>
+    </div>
+
     <!-- P&L Chart -->
     <div class="sub-section">
       <h3>Gewinn / Verlust Verlauf</h3>

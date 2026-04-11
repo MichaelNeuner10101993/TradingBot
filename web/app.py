@@ -1118,5 +1118,35 @@ def check_updates():
         return jsonify({"ok": False, "error": str(e)})
 
 
+
+@app.route("/api/candles/<path:symbol>")
+def api_candles(symbol: str):
+    """Gibt OHLCV-Candles der letzten 24h für ein Symbol zurück (5m-Timeframe)."""
+    import time as _time
+    candles_db = os.path.join(PROJECT_ROOT, "db", "candles.db")
+    if not os.path.exists(candles_db):
+        return jsonify({"ok": False, "error": "candles.db nicht gefunden"})
+    since_ms = int((_time.time() - 86400) * 1000)
+    sym = symbol.replace("_", "/").upper()
+    try:
+        import sqlite3 as _sqlite3
+        con = _sqlite3.connect(candles_db)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT ts, open, high, low, close, volume FROM candles "
+            "WHERE symbol=? AND timeframe='5m' AND ts >= ? ORDER BY ts",
+            (sym, since_ms),
+        )
+        rows = cur.fetchall()
+        con.close()
+        candles = [
+            {"t": r[0], "o": r[1], "h": r[2], "l": r[3], "c": r[4], "v": r[5]}
+            for r in rows
+        ]
+        return jsonify({"ok": True, "symbol": sym, "candles": candles})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)
