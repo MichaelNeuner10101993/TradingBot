@@ -306,10 +306,14 @@ def calculate_available_slots(
     max_bots: int,
     balance_eur: float,
     min_capital_per_bot: float,
+    safety_buffer: float = 0.10,
 ) -> int:
-    """Wie viele neue Bots können noch gestartet werden?"""
+    """Wie viele neue Bots können noch gestartet werden?
+    Sicherheitspuffer wird VOR der Division abgezogen.
+    """
     running = sum(1 for b in active_bots if b.get("process_running", False))
-    affordable = int(balance_eur / min_capital_per_bot) if min_capital_per_bot > 0 else 0
+    usable = balance_eur * (1 - safety_buffer)
+    affordable = int(usable / min_capital_per_bot) if min_capital_per_bot > 0 else 0
     hard_cap = min(max_bots, affordable)
     return max(0, hard_cap - running)
 
@@ -510,18 +514,19 @@ def run_scan_cycle(
     # Slots nach Stopp neu berechnen
     active_bots_after_stop = [b for b in active_bots
                                if b.get("process_running") and b.get("symbol") not in bots_stopped]
+    # Grid-Budget-Parameter (vor slots-Berechnung, damit safety_buf verfügbar)
+    grid_step   = _cfg_float(cfg, "SCAN_GRID_STEP")
+    grid_levels = _cfg_int(cfg,   "SCAN_GRID_LEVELS")
+    safety_buf  = _cfg_float(cfg, "SCAN_SAFETY_BUFFER")
+
     slots = calculate_available_slots(
         active_bots_after_stop,
         _cfg_int(cfg, "SCAN_MAX_BOTS"),
         balance_eur,
         _cfg_float(cfg, "SCAN_MIN_CAPITAL_PER_BOT"),
+        safety_buffer=safety_buf,
     )
     log.info(f"Verfügbare Slots für neue Bots: {slots}")
-
-    # Grid-Budget-Parameter
-    grid_step   = _cfg_float(cfg, "SCAN_GRID_STEP")
-    grid_levels = _cfg_int(cfg,   "SCAN_GRID_LEVELS")
-    safety_buf  = _cfg_float(cfg, "SCAN_SAFETY_BUFFER")
     n_running   = len(active_bots_after_stop)  # wird im Loop hochgezählt
 
     if balance_eur < _cfg_float(cfg, "SCAN_MIN_CAPITAL_PER_BOT"):
