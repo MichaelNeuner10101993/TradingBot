@@ -71,6 +71,7 @@ def main():
     _signal.signal(_signal.SIGTERM, _on_sigterm)
 
     args = parse_args()
+    _startup_warnings = []  # Gesammelt vor log-Initialisierung
 
     # --- Konfiguration (CLI überschreibt Defaults) ---
     exchange_cfg = ExchangeConfig()
@@ -96,7 +97,15 @@ def main():
     _rt_rsi_set       = False
     _rt_sma_set       = False
     if args.trailing_sl:                    risk_cfg.use_trailing_sl    = True
-    if args.trailing_sl_pct is not None:    risk_cfg.trailing_sl_pct    = args.trailing_sl_pct
+    if args.trailing_sl_pct is not None:
+        _tsp = args.trailing_sl_pct
+        if _tsp > 1.0:  # > 100%: Prozentwert statt Fraktion in bot.conf.d
+            _startup_warnings.append(
+                f"--trailing-sl-pct {_tsp} wirkt wie Prozentwert (>1.0=100%!) — "
+                f"korrigiert zu {round(_tsp/100,6):.6f} (3% = 0.03, nicht 3.0)"
+            )
+            _tsp = round(_tsp / 100, 6)
+        risk_cfg.trailing_sl_pct = _tsp
     if args.sl_cooldown is not None:        risk_cfg.sl_cooldown_candles = args.sl_cooldown
     if args.volume_filter:                  risk_cfg.volume_filter      = True
     if args.volume_factor is not None:      risk_cfg.volume_factor      = args.volume_factor
@@ -124,6 +133,8 @@ def main():
 
     # --- Initialisierung ---
     log = setup_logging(ops_cfg)
+    for _w in _startup_warnings:
+        log.error(f"KONFIGURATIONSFEHLER korrigiert: {_w}")
     if args.startup_delay > 0:
         log.info(f"Startup-Delay: {args.startup_delay}s warten …")
         time.sleep(args.startup_delay)
