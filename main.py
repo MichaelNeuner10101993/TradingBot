@@ -65,9 +65,11 @@ def parse_args():
 
 
 def main():
-    # SIGTERM (von systemctl stop) → KeyboardInterrupt → finally-Block setzt status="stopped"
+    # SIGTERM → Flag setzen; Haupt-Loop prüft Flag und bricht sauber ab
+    # (KeyboardInterrupt direkt im Handler riskiert Crash mitten in DB-Commits)
+    _shutdown_requested = [False]
     def _on_sigterm(signum, frame):
-        raise KeyboardInterrupt
+        _shutdown_requested[0] = True
     _signal.signal(_signal.SIGTERM, _on_sigterm)
 
     args = parse_args()
@@ -91,6 +93,8 @@ def main():
     # CLI-Feature-Flags (haben Vorrang vor Supervisor-Empfehlung)
     _cli_trailing_set = args.trailing_sl
     _cli_vol_set      = args.volume_filter
+    _cli_sma200_set   = args.sma200_filter
+    _cli_slope_set    = args.slope_filter
     # Laufzeit-Flags: werden gesetzt wenn User via Dashboard/Telegram überschreibt
     _rt_trailing_set  = False
     _rt_vol_set       = False
@@ -174,7 +178,7 @@ def main():
 
     # --- Hauptschleife ---
     try:
-        while True:
+        while not _shutdown_requested[0]:
             try:
                 # 1) Marktdaten holen
                 candles     = feed.fetch_ohlcv()
@@ -255,6 +259,14 @@ def main():
                             sv_vol = _sv.get("supervisor_volume_filter", "")
                             if sv_vol.lower() in ("true", "false"):
                                 risk_cfg.volume_filter = sv_vol.lower() == "true"
+                        if not _cli_sma200_set:
+                            sv_sma200 = _sv.get("supervisor_sma200_filter", "")
+                            if sv_sma200.lower() in ("true", "false"):
+                                risk_cfg.sma200_filter = sv_sma200.lower() == "true"
+                        if not _cli_slope_set:
+                            sv_slope = _sv.get("supervisor_slope_filter", "")
+                            if sv_slope.lower() in ("true", "false"):
+                                risk_cfg.slope_filter = sv_slope.lower() == "true"
                         log.debug(
                             f"Regime={_sv['supervisor_regime']} | "
                             f"Strategie={_sv.get('supervisor_strategy_name','?')} "
@@ -482,10 +494,19 @@ def main():
                             reason="tp_partial_closed",
                             override_amount=partial,
                         )
-                        if remainder * last_price >= risk_cfg.min_order_quote:
+                        # Remainder IMMER tracken, unabhaengig von min_order_quote.
+                        # Sonst bleibt die Restposition ungemanagt auf Kraken.
+                        if remainder > 0:
                             new_tp = tp_price + (tp_price - entry)
                             db.open_trade(str(uuid.uuid4()), bot_cfg.symbol, remainder,
                                           tp_price, entry, new_tp, is_remainder=1)
+                            _rem_eur = remainder * last_price
+                            if _rem_eur < risk_cfg.min_order_quote:
+                                log.warning(
+                                    f"Partial TP: Remainder {remainder:.6f} ({_rem_eur:.2f}EUR) "
+                                    f"unter min_order_quote {risk_cfg.min_order_quote}EUR "
+                                    f"-- Trade wird verfolgt, SL-Ausfuehrung evtl. fehlerhaft"
+                                )
                             log.info(
                                 f"Partial TP: {partial:.6f} verkauft, "
                                 f"{remainder:.6f} als Remainder-Trade (SL={entry:.6f} TP={new_tp:.6f})"
@@ -726,7 +747,13 @@ def main():
         log.info("Bot gestoppt (SIGINT).")
 
     finally:
-        db.set_state("status", "stopped")
+        # SIGTERM-Flag gesetzt → sauberer Ausstieg ohne Exception
+        if _shutdown_requested[0]:
+            log.info("Bot gestoppt (SIGTERM).")
+        try:
+            db.set_state("status", "stopped")
+        except Exception:
+            pass
         log.info("Bot beendet.")
         db.close()
 
