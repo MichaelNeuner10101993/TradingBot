@@ -222,7 +222,12 @@ def _write(
         cur_trailing = db.get_state("use_trailing_sl", "False").lower() == "true"
         cur_vol      = db.get_state("volume_filter",   "False").lower() == "true"
         rec_trailing = best.get("use_trailing_sl", False)
-        rec_vol      = best.get("volume_filter",   False)
+        # volume_filter nur anwenden wenn Simulation tatsächlich Trades hatte
+        # (bei 0 Trades kann der Filter nicht sinnvoll bewertet werden)
+        if best.get("num_trades", 0) > 0:
+            rec_vol = best.get("volume_filter", False)
+        else:
+            rec_vol = cur_vol  # keine Änderung wenn Sim 0 Trades
         if rec_trailing != cur_trailing or rec_vol != cur_vol:
             # Vorherige Werte für Rükgängig sichern
             db.set_state("supervisor_prev_trailing_sl",    str(cur_trailing))
@@ -554,7 +559,7 @@ TREND_REGIMES = {"BULL", "VOLATILE"}  # SMA-Crossover sinnvoll
 PAUSE_REGIMES = {"BEAR", "EXTREME"}  # Alles stoppen
 
 
-def _manage_bot_type(symbol: str, regime: str, prev_regime: str, dry_run: bool):
+def _manage_bot_type(symbol: str, regime: str, prev_regime: str, dry_run: bool, db_dir: str = ""):
     log = logging.getLogger("supervisor")
     import requests as _req
 
@@ -580,6 +585,45 @@ def _manage_bot_type(symbol: str, regime: str, prev_regime: str, dry_run: bool):
     if new_type == prev_type:
         return  # Kein Wechsel noetig
 
+    # Offene Trades prüfen — Bot NICHT stoppen wenn Trade aktiv.
+    # Ausnahme: News-Agent-Score <= NEWS_STOP_THRESHOLD erlaubt Override.
+    NEWS_STOP_THRESHOLD = -0.5
+    if db_dir and prev_type != "none":
+        import os as _os, sqlite3 as _sq
+        _sym_safe = symbol.replace("/", "_")
+        _db_path  = _os.path.join(db_dir, f"{_sym_safe}.db")
+        if _os.path.exists(_db_path):
+            try:
+                _c = _sq.connect(_db_path, timeout=3)
+                _open = _c.execute("SELECT COUNT(*) FROM trades WHERE status='open'").fetchone()[0]
+                if _open > 0:
+                    _sent_row = _c.execute(
+                        "SELECT value FROM bot_state WHERE key='current_sentiment_score'"
+                    ).fetchone()
+                    _sentiment = float(_sent_row[0]) if _sent_row else None
+                    _c.close()
+                    if _sentiment is not None and _sentiment <= NEWS_STOP_THRESHOLD:
+                        log.warning(
+                            f"Bot-Typ-Wechsel {symbol}: offener Trade, aber "
+                            f"Sentiment={_sentiment:+.3f} <= {NEWS_STOP_THRESHOLD} "
+                            f"— News-Override, stoppe trotzdem "
+                            f"(Regime: {prev_regime} -> {regime})"
+                        )
+                        # kein return -> Stopp wird durchgeführt
+                    else:
+                        _sent_str = f"{_sentiment:+.3f}" if _sentiment is not None else "n/a"
+                        log.info(
+                            f"Bot-Typ-Wechsel {symbol} ÜBERSPRUNGEN: {_open} offener Trade(s), "
+                            f"Sentiment={_sent_str} > {NEWS_STOP_THRESHOLD} "
+                            f"(Regime: {prev_regime} -> {regime})"
+                        )
+                        return
+                else:
+                    _c.close()
+            except Exception as _e:
+                log.warning(f"Bot-Typ-Wechsel {symbol}: DB-Lese-Fehler ({_e}) — Wechsel abgebrochen")
+                return  # konservativ: bei Fehler NICHT stoppen
+
     log.info(f"Bot-Typ-Wechsel {symbol}: {prev_type} -> {new_type} (Regime: {prev_regime} -> {regime})")
 
     # Alten Bot stoppen
@@ -596,16 +640,36 @@ def _manage_bot_type(symbol: str, regime: str, prev_regime: str, dry_run: bool):
 
 
 def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, dry_run: bool):
-    """Einen Supervisor-Durchlauf über alle Bot-DBs."""
+    """Einen Supervisor-Durchlauf über alle aktiven Bot-DBs."""
     log = logging.getLogger("supervisor")
+
+    # Nur aktive Bots optimieren (Web API abfragen)
+    import requests as _req_sv
+    _active_symbols: set[str] = set()
+    try:
+        _resp = _req_sv.get(f"{WEB_API}/api/bots", timeout=8)
+        _resp.raise_for_status()
+        _active_symbols = {b["symbol"] for b in _resp.json() if b.get("process_running", False)}
+        log.info(f"Aktive Bots laut Web API: {len(_active_symbols)} — {sorted(_active_symbols)}")
+    except Exception as _e:
+        log.warning(f"Web API nicht erreichbar ({_e}) – verarbeite alle DBs als Fallback")
+
     db_paths = sorted(glob(os.path.join(db_dir, "*.db")))
 
     # candles.db + news.db aus der Liste heraushalten
     _SKIP = {"candles.db", "news.db", "scanner.db", "supervisor.db"}
     db_paths = [p for p in db_paths if os.path.basename(p) not in _SKIP and not os.path.basename(p).startswith("grid_")]
 
+    # Auf aktive Bots filtern (wenn API verfügbar)
+    if _active_symbols:
+        db_paths = [
+            p for p in db_paths
+            if os.path.basename(p).replace("_EUR.db", "/EUR") in _active_symbols
+            or os.path.basename(p).replace(".db", "").replace("_", "/") in _active_symbols
+        ]
+
     if not db_paths:
-        log.info("Keine Bot-DBs gefunden.")
+        log.info("Keine aktiven Bot-DBs gefunden.")
         return
 
     log.info(f"Supervisor-Durchlauf: {len(db_paths)} Bot(s)")
@@ -715,7 +779,7 @@ def run_once(exchange: ccxt.Exchange, db_dir: str, timeframe: str, limit: int, d
 
             # Bot-Typ je nach Regime umschalten (SIDEWAYS->Grid, BULL->Trend, BEAR->Stopp)
             if prev and prev != regime:  # Supervisor managt alle aktiven Bots automatisch
-                _manage_bot_type(symbol, regime, prev, dry_run)
+                _manage_bot_type(symbol, regime, prev, dry_run, db_dir)
 
             # Ergebnis für Cross-Bot Learning merken
             results[symbol] = {
