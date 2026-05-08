@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot API/Liveness Healthcheck Timer (every 15 min)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Unit=tradingbot-api-health.service
+
+[Install]
+WantedBy=timers.target

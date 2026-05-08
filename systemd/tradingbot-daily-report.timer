@@ -1,0 +1,12 @@
+[Unit]
+Description=Trading Bot Daily Report Timer (06:00 lokal)
+
+[Timer]
+# 06:00 Europe/Berlin (handhabt MEZ/MESZ automatisch)
+OnCalendar=*-*-* 06:00 Europe/Berlin
+Persistent=true
+AccuracySec=1min
+Unit=tradingbot-daily-report.service
+
+[Install]
+WantedBy=timers.target

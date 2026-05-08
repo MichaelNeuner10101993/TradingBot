@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot Daily Report (Telegram)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/root/bot/.env
+WorkingDirectory=/root/bot
+ExecStart=/root/bot/botvenv/bin/python /root/bot/watchdog/daily_report.py
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot Open-Trade Watchdog Timer (every 5 min)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Unit=tradingbot-trade-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot Open-Trade Watchdog
+After=network-online.target tradingbot-web.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/root/bot/.env
+WorkingDirectory=/root/bot
+ExecStart=/root/bot/botvenv/bin/python /root/bot/watchdog/trade_guard.py
+StandardOutput=journal
+StandardError=journal

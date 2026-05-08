@@ -976,6 +976,43 @@ Regime:          TREND
 
 ---
 
+## Watchdog & Überwachung
+
+Vier-Schichten-Überwachung in `watchdog/`, alle Schichten schicken Telegram-Alerts
+und nutzen `notify.py` (standalone, nur `requests` — kein python-telegram-bot).
+
+| Schicht | Auslöser | Aktion |
+|---------|----------|--------|
+| **1. Crash-Alert** | systemd `OnFailure` auf `tradingbot@*.service` | `alert.py crash <unit>` schickt Telegram mit journal-tail |
+| **2. Open-Trade-Guard** | Timer alle 5 min | Findet `status='open'`/`'tp_partial_closed'` ohne laufenden Bot → `systemctl start` + Telegram (1h cooldown) |
+| **3. Liveness-Check** | Timer alle 15 min | Web/Scanner/Supervisor-Units, `/api/bots`, stale state, `scan_history.notes='api_unavailable'` 2× |
+| **4. Daily Report** | 06:00 Europe/Berlin | Aktive Bots, Closed-Trades 24h (PnL nach Kraken-Fee), offene Positionen mit Live-Preis, Top-3 Scores, Errors |
+
+**Voraussetzungen:** `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `/root/bot/.env`.
+
+**Systemd-Setup:**
+```
+/etc/systemd/system/tradingbot-alert@.service              # Schicht 1
+/etc/systemd/system/tradingbot@.service.d/onfailure.conf   # Drop-in: OnFailure=tradingbot-alert@%i
+/etc/systemd/system/tradingbot-trade-guard.{service,timer} # Schicht 2
+/etc/systemd/system/tradingbot-api-health.{service,timer}  # Schicht 3
+/etc/systemd/system/tradingbot-daily-report.{service,timer}# Schicht 4
+```
+
+**Stamp-Files** (Cooldowns/Dedup):
+- `/var/lib/tradingbot-watchdog/` — Trade-Guard und Liveness-Cooldowns (1h)
+- `/run/tradingbot-watchdog/` — Crash-Alert-Dedupe (60s)
+
+**Manueller Test:**
+```bash
+/root/bot/botvenv/bin/python /root/bot/watchdog/notify.py "Test"
+/root/bot/botvenv/bin/python /root/bot/watchdog/trade_guard.py
+/root/bot/botvenv/bin/python /root/bot/watchdog/api_health.py
+/root/bot/botvenv/bin/python /root/bot/watchdog/daily_report.py
+```
+
+---
+
 ## News-Agent
 
 Überwacht Krypto-News aus 10+ Quellen, berechnet Sentiment-Scores
@@ -1220,6 +1257,16 @@ bash /tmp/install.sh
 ---
 
 ## Changelog
+
+### 2026-05-08 — Watchdog-Stack & Scanner-Fix
+
+**Watchdog (`watchdog/`):**
+- 4-Schichten-Überwachung: Crash-Alert (systemd OnFailure), Open-Trade-Guard mit Auto-Restart (5 min), API/Liveness-Check (15 min), Daily Report (06:00 Berlin)
+- Standalone `notify.py` ohne python-telegram-bot (nur `requests`)
+- Erster Live-Lauf fing direkt einen verwaisten UNI/EUR-Trade (24 Tage) und HYPE/EUR-Vermisstheit ein
+
+**Scanner-Fix (`scanner.py`):**
+- `/api/bots?active_only=false` statt naked-Call — alter Sanity-Check `len(bots)==0 && conf_files>0 → "API down"` blockierte fälschlicherweise neue Bot-Starts wenn alle Bots gestoppt waren
 
 ### 2026-04-11 — Trend-Scanner, Grid-Bot, Supervisor Bot-Typ-Management
 

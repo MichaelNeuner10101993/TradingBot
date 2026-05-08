@@ -14,7 +14,7 @@ from bot import notify
 log = logging.getLogger("tradingbot.execution")
 
 # Fee-Gate Konstanten (Kraken: 0.26% Taker-Fee pro Order, 0.52% Roundtrip)
-_MIN_STOP_DIST_PCT = 0.40  # mind. 0.40% SL-Abstand
+_MIN_STOP_DIST_PCT = 0.56  # mind. 0.40% SL-Abstand
 _MIN_TP_GROSS_PCT  = 0.78  # mind. 0.78% TP-Abstand (≈ 1.5× Roundtrip-Fee)
 
 

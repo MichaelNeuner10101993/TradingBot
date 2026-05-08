@@ -61,6 +61,7 @@ def parse_args():
     p.add_argument("--slope-filter",      action="store_true",        help="BUY nur wenn Slow-SMA nicht stark fällt")
     p.add_argument("--slope-lookback",    type=int,   default=None,   help="Lookback-Candles für Slope-Filter (default: 20)")
     p.add_argument("--slope-min-pct",     type=float, default=None,   help="Min. Slope %% für BUY (default: -0.15)")
+    p.add_argument("--trade-hours", default="", help="Handelsfenster UTC (z.B. 8-18)")
     return p.parse_args()
 
 
@@ -124,6 +125,7 @@ def main():
     if args.slope_filter:                   risk_cfg.slope_filter       = True
     if args.slope_lookback is not None:     risk_cfg.slope_lookback     = args.slope_lookback
     if args.slope_min_pct is not None:      risk_cfg.slope_min_pct      = args.slope_min_pct
+    _trade_hours = args.trade_hours
 
     # DB-Verzeichnis für Bot-Zählung
     risk_cfg.db_dir = os.path.dirname(ops_cfg.db_path) or "db"
@@ -359,6 +361,17 @@ def main():
                             f"kein klarer Trend, Einstieg blockiert)"
                         )
                         signal = "HOLD"
+
+                # Zeit-Filter: BUY nur im konfigurierten UTC-Handelsfenster
+                if signal == "BUY" and _trade_hours:
+                    try:
+                        _h_start, _h_end = (int(x) for x in _trade_hours.split("-"))
+                        _cur_hour = datetime.now(timezone.utc).hour
+                        if not (_h_start <= _cur_hour < _h_end):
+                            log.info(f"Zeit-Filter: BUY -> HOLD (UTC {_cur_hour:02d}:xx ausserhalb {_h_start:02d}:00-{_h_end:02d}:00)")
+                            signal = "HOLD"
+                    except Exception:
+                        pass
 
                 # Auto-Unpause prüfen (24h-Pause nach konsekutiven SL-Hits)
                 _pause_until = _sv.get("pause_until", "")

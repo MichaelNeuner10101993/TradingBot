@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot Crash Alert - %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/root/bot/.env
+WorkingDirectory=/root/bot
+ExecStart=/root/bot/botvenv/bin/python /root/bot/watchdog/alert.py crash %i
+StandardOutput=journal
+StandardError=journal

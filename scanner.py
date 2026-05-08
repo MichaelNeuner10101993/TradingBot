@@ -278,18 +278,21 @@ def get_active_bots_safe(
     Im None-Fall: START und STOP komplett überspringen.
     """
     try:
-        resp = requests.get(f"{api_url}/api/bots", timeout=8)
+        # active_only=false: alle bekannten Bots inkl. process_running-Flag holen.
+        # Scanner-Downstream filtert selbst auf process_running.
+        resp = requests.get(f"{api_url}/api/bots?active_only=false", timeout=8)
         resp.raise_for_status()
         bots = resp.json()
         if not isinstance(bots, list):
             log.warning("Web API: unerwartetes Format bei /api/bots")
             return None
-        # Sanity-Check: 0 Bots aber conf-Dateien vorhanden → API wahrscheinlich down
+        # Healthcheck: keinerlei Bot-Einträge UND conf-Dateien existieren → API liefert
+        # falsche Daten (sollte aktiv-only=false eigentlich nie passieren).
         conf_count = len(list(Path(conf_dir).glob("*.conf")))
         if len(bots) == 0 and conf_count > 0:
             log.warning(
-                f"Web API: 0 Bots gemeldet, aber {conf_count} conf-Dateien existieren "
-                f"→ API evtl. down, skip Start/Stopp"
+                f"Web API: 0 Bot-Einträge bei active_only=false, aber {conf_count} conf-Dateien "
+                f"→ API liefert falsche Daten, skip Start/Stopp"
             )
             return None
         return bots
@@ -505,6 +508,44 @@ def run_scan_cycle(
                     sym, stop_reason, regime,
                     state["consecutive_sl"], dry_run=True
                 )
+
+    # ── 5b. TRIM-PHASE: Überzählige Bots stoppen ──────────────────────────────
+    # Falls nach normalem Stopp immer noch mehr als SCAN_MAX_BOTS laufen,
+    # werden die schwächsten (niedrigster Score) zuerst gestoppt.
+    _max_bots = _cfg_int(cfg, "SCAN_MAX_BOTS")
+    _running_after_stop = [b for b in active_bots
+                           if b.get("process_running") and b.get("symbol") not in bots_stopped]
+    _overflow = len(_running_after_stop) - _max_bots
+    if _overflow > 0:
+        log.warning(f"TRIM: {len(_running_after_stop)} Bots laufen, Limit={_max_bots} → stoppe {_overflow} schwächste")
+        # Schwächste zuerst (kein Score = 0, kein offener Trade bevorzugt)
+        def _trim_key(b):
+            sym = b.get("symbol", "")
+            ps = score_by_symbol.get(sym)
+            score = ps.total if ps else 0
+            state = read_bot_state(sym, db_dir)
+            has_trade = 1 if state["has_open_trade"] else 0
+            return (has_trade, score)  # zuerst ohne offene Trades, dann nach Score aufsteigend
+
+        trim_candidates = sorted(_running_after_stop, key=_trim_key)
+        trimmed = 0
+        for bot in trim_candidates:
+            if trimmed >= _overflow:
+                break
+            sym = bot.get("symbol", "")
+            state = read_bot_state(sym, db_dir)
+            if state["has_open_trade"]:
+                log.warning(f"TRIM: {sym} übersprungen (offener Trade)")
+                continue
+            log.warning(f"TRIM: stoppe {sym} (Score={score_by_symbol.get(sym).total if sym in score_by_symbol else 0})")
+            if not dry_run:
+                if stop_bot_api(sym, api_url, log):
+                    bots_stopped.append(sym)
+                    send_scanner_stopped(sym, "trim_overflow", score_by_symbol.get(sym, type("x", (), {"regime": "?"})()).regime, 0, dry_run=False)
+                    trimmed += 1
+            else:
+                bots_stopped.append(f"{sym}(dry-trim)")
+                trimmed += 1
 
     # ── 6. START-PHASE ─────────────────────────────────────────────────────────
     bots_started: list[str] = []

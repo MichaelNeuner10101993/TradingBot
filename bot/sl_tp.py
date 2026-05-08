@@ -38,7 +38,7 @@ def calc_levels(
             sl_pct   = (entry_price - sl_price) / entry_price * 100
             tp_pct   = (tp_price - entry_price) / entry_price * 100
             # TP-Cap: ATR-TP nie über MAX_TP_PCT (verhindert unrealistische Ziele)
-            MAX_TP_PCT = 0.05  # 5% Maximum
+            MAX_TP_PCT = 0.08  # 8% Maximum
             if tp_pct / 100 > MAX_TP_PCT:
                 tp_price = entry_price * (1 + MAX_TP_PCT)
                 tp_pct   = MAX_TP_PCT * 100
@@ -59,7 +59,7 @@ def calc_levels(
                 return sl_price, tp_price
 
     # Fallback: feste Prozentsätze (TP gecappt auf max 5%)
-    _tp_pct  = min(cfg.take_profit_pct, 0.05)
+    _tp_pct  = min(cfg.take_profit_pct, 0.08)
     sl_price = entry_price * (1 - cfg.stop_loss_pct)
     tp_price = entry_price * (1 + _tp_pct)
     log.info(
