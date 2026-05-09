@@ -985,7 +985,7 @@ und nutzen `notify.py` (standalone, nur `requests` — kein python-telegram-bot)
 |---------|----------|--------|
 | **1. Crash-Alert** | systemd `OnFailure` auf `tradingbot@*.service` | `alert.py crash <unit>` schickt Telegram mit journal-tail |
 | **2. Open-Trade-Guard** | Timer alle 5 min | Findet `status='open'`/`'tp_partial_closed'` ohne laufenden Bot → `systemctl start` + Telegram (1h cooldown) |
-| **3. Liveness-Check** | Timer alle 15 min | Web/Scanner/Supervisor-Units, `/api/bots`, stale state, `scan_history.notes='api_unavailable'` 2× |
+| **3. Liveness-Check** | Timer alle 15 min | Web/Scanner/Supervisor-Units, `/api/bots`, stale state (mit offenem Trade → Telegram, ohne → auto-Cleanup im DB), `scan_history.notes='api_unavailable'` 2× |
 | **4. Daily Report** | 06:00 Europe/Berlin | Aktive Bots, Closed-Trades 24h (PnL nach Kraken-Fee), offene Positionen mit Live-Preis, Top-3 Scores, Errors |
 
 **Voraussetzungen:** `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `/root/bot/.env`.
@@ -1257,6 +1257,17 @@ bash /tmp/install.sh
 ---
 
 ## Changelog
+
+### 2026-05-09 — Watchdog: Stale-State-Härtung
+
+**Hintergrund:** ETH/EUR-Bot crashte am 27.04., aber `bot_state.status='running'` blieb in der DB hängen. `api_health.py` schickte deshalb 12 Tage lang stündlich Telegram-Alerts ("Stale state-Files: ETH/EUR"). State manuell auf `stopped` gesetzt.
+
+**Watchdog-Härtung (`watchdog/api_health.py`):**
+- `find_stale_state()` liefert jetzt `(critical, harmless)` statt einer Liste
+- Stale ohne offenen Trade → `cleanup_stale_status()` setzt `bot_state.status='stopped'` automatisch, nur Log
+- Stale **mit** offenem Trade → bleibt Telegram-Alert (echter Notfall, trade_guard übernimmt Restart)
+
+**Effekt:** Zukünftige Bot-Crashes ohne offene Position werden lautlos saubergemacht; nur echte Notfälle (Position offen, Bot tot) erzeugen noch Telegram-Spam.
 
 ### 2026-05-08 — Watchdog-Stack & Scanner-Fix
 

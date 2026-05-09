@@ -81,9 +81,56 @@ def fetch_api() -> list | None:
         return None
 
 
-def find_stale_state(bots: list) -> list[dict]:
-    """status='running' aber process_running=False → veraltete state.json"""
-    return [b for b in bots if b.get("status") == "running" and not b.get("process_running")]
+def has_open_trade(sym_safe: str) -> bool:
+    """Prüft ob die per-Symbol DB einen offenen Trade enthält."""
+    import os
+    db = os.path.join(DB_DIR, f"{sym_safe}.db")
+    if not os.path.exists(db):
+        return False
+    try:
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        n = c.execute(
+            "SELECT COUNT(*) FROM trades WHERE status IN ('open','tp_partial_closed')"
+        ).fetchone()[0]
+        c.close()
+        return n > 0
+    except Exception:
+        return False
+
+
+def cleanup_stale_status(sym_safe: str) -> bool:
+    """Setzt bot_state.status='stopped' in der per-Symbol DB. Returns True bei Erfolg."""
+    import os
+    db = os.path.join(DB_DIR, f"{sym_safe}.db")
+    if not os.path.exists(db):
+        return False
+    try:
+        c = sqlite3.connect(db, timeout=10)
+        c.execute("UPDATE bot_state SET value='stopped' WHERE key='status'")
+        c.commit()
+        c.close()
+        return True
+    except Exception as e:
+        log.warning(f"cleanup_stale_status({sym_safe}): {e}")
+        return False
+
+
+def find_stale_state(bots: list) -> tuple[list[dict], list[dict]]:
+    """Liefert (critical, harmless):
+    - critical: stale state UND offener Trade → echter Notfall
+    - harmless: stale state ohne offenen Trade → nur Kosmetik
+    """
+    critical, harmless = [], []
+    for b in bots:
+        if b.get("status") == "running" and not b.get("process_running"):
+            sym_safe = b.get("symbol", "").replace("/", "_")
+            if has_open_trade(sym_safe):
+                b["_sym_safe"] = sym_safe
+                critical.append(b)
+            else:
+                b["_sym_safe"] = sym_safe
+                harmless.append(b)
+    return critical, harmless
 
 
 def scanner_recent_unavailable() -> int:
@@ -129,14 +176,23 @@ def main() -> int:
              f"{sum(1 for b in bots if b.get('process_running'))} laufen")
 
     # Check 3: Stale state
-    stale = find_stale_state(bots)
-    if stale and cooldown_passed("stale_state"):
+    critical, harmless = find_stale_state(bots)
+
+    # Harmlose Stales (kein offener Trade) automatisch aufräumen, kein Telegram
+    for b in harmless:
+        ok = cleanup_stale_status(b["_sym_safe"])
+        log.info(f"stale (harmlos) {b['symbol']}: bot_state.status auto-cleaned={ok}")
+
+    # Kritische Stales (offener Trade!) → Telegram + cleanup verzichten,
+    # damit trade_guard die Sache übernimmt (Restart). Cooldown 1h.
+    if critical and cooldown_passed("stale_state"):
         mark("stale_state")
-        names = ", ".join(b["symbol"] for b in stale)
+        names = ", ".join(b["symbol"] for b in critical)
         text = (
-            f"⚠️ <b>Stale state-Files:</b> {len(stale)} Bot(s)\n"
-            f"<code>status='running'</code> aber Prozess tot: {names}\n"
-            f"<i>(Hinweis: Crash ohne Cleanup. trade_guard hätte schon restart probiert.)</i>"
+            f"🚨 <b>STALE STATE + OFFENER TRADE: {len(critical)} Bot(s)</b>\n"
+            f"<code>status='running'</code> aber Prozess tot, Position offen!\n"
+            f"Betroffen: {names}\n"
+            f"<i>trade_guard sollte in &lt;5min Restart probieren.</i>"
         )
         telegram_send(text)
 
