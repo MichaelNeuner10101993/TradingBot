@@ -32,6 +32,7 @@ log = logging.getLogger("watchdog.api_health")
 
 API_URL = "http://localhost:5001/api/bots?active_only=false"
 SCANNER_DB = "/root/bot/db/scanner.db"
+DB_DIR = "/root/bot/db"
 STAMP_DIR = Path("/var/lib/tradingbot-watchdog")
 COOLDOWN_SEC = 3600
 
