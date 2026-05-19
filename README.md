@@ -283,7 +283,7 @@ Beispiel: Entry bei 100 EUR, breakeven_pct=1%
 - **0.02–0.03 (2–3%):** Breakeven erst nach größerem Gewinn – der Trade kann zwischenzeitlich noch ins Minus fallen bevor der SL angepasst wird. Geeignet für volatile Coins mit weitem ATR-SL.
 - **> 0.05:** Zu hoch – der Kurs könnte den TP erreichen bevor der Breakeven ausgelöst wird.
 
-> **Kombination mit Trailing-SL:** Breakeven schützt vor Verlust, Trailing-SL sichert zusätzlich wachsende Gewinne. Empfehlung: `--breakeven --breakeven-pct 0.01 --trailing-sl --trailing-sl-pct 0.02`
+> **Kombination mit Trailing-SL:** Breakeven schützt vor Verlust, Trailing-SL sichert zusätzlich wachsende Gewinne. Empfehlung (Live-Default seit 19.05.26): `--breakeven --breakeven-pct 0.005 --trailing-sl --trailing-sl-pct 0.01`
 
 ---
 
@@ -1257,6 +1257,28 @@ bash /tmp/install.sh
 ---
 
 ## Changelog
+
+### 2026-05-19 — Konservativ-Rollout SL/TP/Trail/BE
+
+**Auslöser:** Lifetime-Bilanz auf CT 101: 11W/56L = 16% Win-Rate, −7,79€ realized PnL, seit 14.04 nur Stop-Losses. Wallet auf 239€ geschrumpft.
+
+**Backtest-Befund** (3 Runs gegen `db/*_EUR.db` + `db/candles.db`, 24-29 von 67 Trades mit 5m-Candle-Coverage):
+- Original `--sl 0.015 --tp 0.08 --trailing-sl-pct 0.03 --breakeven-pct 0.015`: 8,3% WR, −3,73€
+- Konservativ `--sl 0.03 --tp 0.06 --trailing-sl-pct 0.01 --breakeven-pct 0.005`: 20,8% WR, **+8,29€ über 24 Trades**
+- Hit-Rate-Variante `--sl 0.015 --tp 0.02`: 41,7% WR, +4,48€
+- Root-Cause: TP=8% in 48-72h Crypto-Range fast nie erreicht → Win-Rate kollabiert. Trail=3% wurde nie aktiv weil Positionen selten so weit ins Plus laufen.
+
+**Geändert** auf 37 Configs (`bot.conf.d/*.conf` + `scanner.conf` `SCAN_BOT_ARGS`):
+- `--sl 0.015` → `--sl 0.03`
+- `--tp 0.08` → `--tp 0.06` (30 von 37; 7 Custom-Coins ADA/BTC/ETH/PEPE/SNX/SOL/XRP behielten TP=4-10%)
+- `--trailing-sl-pct 0.03` → `--trailing-sl-pct 0.01` (33 von 37)
+- `--breakeven-pct 0.015` → `--breakeven-pct 0.005`
+
+**Backup:** `/root/bot/bot.conf.d.bak_20260519_011158/` + `scanner.conf.bak_20260519_011158`. Rollback per `cp -a`.
+
+**Restart:** systemd-Bots (HYPE, UNI) via `systemctl restart tradingbot@<SYM>.service`. Scanner-gestartete Bots (ZEC/BCH/XDC) per `kill -TERM`, Re-Spawn beim nächsten Scanner-Run (alle 30 min).
+
+**Performance-Check** nach 7 Tagen / 5-10 neuen Trades. Wenn weiterhin negativ: Entry-Logik (RSI/SMA-Filter, SMA200-Slope) hinterfragen, nicht Exit-Parameter weiter tunen.
 
 ### 2026-05-09 — Watchdog: Stale-State-Härtung
 
